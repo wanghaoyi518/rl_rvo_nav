@@ -131,3 +131,5 @@ dmypy.json
 model_save/
 
 figure/
+
+*.txt
