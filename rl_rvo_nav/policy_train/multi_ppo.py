@@ -115,7 +115,14 @@ class multi_ppo:
 
         if con_train:
             check_point = torch.load(load_fname)
-            self.ac.load_state_dict(check_point['model_state'], strict=True)
+            # Check if checkpoint is a dictionary with 'model_state' key or a full model
+            if isinstance(check_point, dict) and 'model_state' in check_point:
+                print("Loading model from state dictionary...")
+                self.ac.load_state_dict(check_point['model_state'], strict=True)
+            else:
+                print("Loading from full model checkpoint...")
+                # If it's a full model, we need to copy its state dict to our model
+                self.ac.load_state_dict(check_point.state_dict(), strict=True)
             self.ac.train()
             # self.ac.eval()
 
@@ -131,6 +138,13 @@ class multi_ppo:
         self.train_pi_iters = train_pi_iters
         self.train_v_iters=train_v_iters
         self.target_kl=target_kl    
+
+        # New parameters for success rate and step cost based early stopping
+        self.target_success_rate = 0.98  # Stop when success rate reaches 98%
+        self.step_cost_window = 5  # Window size for step cost improvement tracking
+        self.step_cost_threshold = 0.01  # Minimum improvement threshold for step cost
+        self.best_success_rate = 0.0  # Track best success rate
+        self.step_cost_history = []  # Track step cost history for convergence check
 
         self.render = render
         self.render_freq = render_freq
@@ -160,6 +174,9 @@ class multi_ppo:
 
         obs_list, ep_ret_list, ep_len_list = self.env.reset(mode=self.reset_mode), [0] * self.robot_num, [0] * self.robot_num
         ep_ret_list_mean = [[] for i in range(self.robot_num)]
+        success_count = 0  # Track successful episodes
+        total_episodes = 0  # Track total episodes
+        current_step_cost = 0  # Track current step cost
 
         for epoch in range(self.epoch + 1):
             start_time = time.time()
@@ -174,9 +191,6 @@ class multi_ppo:
                 if self.render and (epoch % self.render_freq == 0 or epoch == self.epoch):
                     self.env.render(save=self.save_figure, path=self.figure_save_path, i = t )
 
-                # if self.save_figure and epoch == 1:
-                #     self.env.render(save=True, path=self.save_path+'figure/', i=t)
-
                 a_list, v_list, logp_list, abs_action_list = [], [], [], []
             
                 for i in range(self.robot_num):
@@ -190,7 +204,6 @@ class multi_ppo:
 
                     cur_vel = np.squeeze(self.env.ir_gym.robot_list[i].vel_omni)
                     abs_action = self.env.ir_gym.acceler * np.round(a_inc, 2)  + cur_vel
-                    # abs_action = 1.5*a_inc
                     abs_action = np.round(abs_action, 2)
                     abs_action_list.append(abs_action)
 
@@ -198,10 +211,10 @@ class multi_ppo:
 
                 # save to buffer
                 for i in range(self.robot_num):
-                    
                     self.buf_list[i].store(obs_list[i], a_list[i], reward_list[i], v_list[i], logp_list[i])
                     ep_ret_list[i] += reward_list[i]
                     ep_len_list[i] += 1
+                    current_step_cost += abs(reward_list[i])  # Accumulate step cost
 
                 # Update obs 
                 obs_list = next_obs_list[:]
@@ -211,16 +224,16 @@ class multi_ppo:
                 terminal = max(done_list) == True or max(ep_len_list) > self.max_ep_len
 
                 if epoch_ended or arrive_all:
-
                     if epoch + 1 % 300 == 0:
                         obs_list = self.env.reset(mode=self.reset_mode)
                     else:
                         obs_list = self.env.reset(mode=0)
                     
                     for i in range(self.robot_num):
-                        
                         if arrive_all:
                             ep_ret_list_mean[i].append(ep_ret_list[i])
+                            success_count += 1
+                        total_episodes += 1
 
                         ep_ret_list[i] = 0
                         ep_len_list[i] = 0
@@ -228,12 +241,13 @@ class multi_ppo:
                         self.buf_list[i].finish_path(0)
 
                 elif terminal:
-
                     for i in range(self.robot_num):
                         if done_list[i] or ep_len_list[i] > self.max_ep_len:
-                        
                             self.env.reset_one(i)
                             ep_ret_list_mean[i].append(ep_ret_list[i])
+                            if info_list[i]:  # If episode ended successfully
+                                success_count += 1
+                            total_episodes += 1
                             ep_ret_list[i] = 0
                             ep_len_list[i]= 0
 
@@ -245,9 +259,7 @@ class multi_ppo:
                 self.save_model(epoch) 
 
                 if self.save_result and epoch != 0:
-                # if self.save_result:
                     policy_model = self.save_path + self.save_name+'_'+str(epoch)+'.pt'
-                    # policy_model = self.save_path + self.save_name+'_'+'check_point_'+ str(epoch)+'.pt'
                     result_path = self.save_path
                     policy_name = self.save_name+'_'+str(epoch)
                     thread = threading.Thread(target=self.pt.policy_test, args=('drl', policy_model, policy_name, result_path, '/results.txt'))
@@ -259,8 +271,22 @@ class multi_ppo:
             print('The reward in this epoch: ', 'min', min_ret, 'mean', mean, 'max', max_ret)
             ep_ret_list_mean = [[] for i in range(self.robot_num)]
 
+            # Calculate success rate and average step cost
+            success_rate = success_count / total_episodes if total_episodes > 0 else 0
+            avg_step_cost = current_step_cost / total_episodes if total_episodes > 0 else 0
+            print(f'Success rate: {success_rate:.2%}, Average step cost: {avg_step_cost:.4f}')
+
+            # Check early stopping criteria
+            if self.check_early_stopping(success_rate, avg_step_cost):
+                print('Training stopped due to early stopping criteria')
+                break
+
+            # Reset counters for next epoch
+            success_count = 0
+            total_episodes = 0
+            current_step_cost = 0
+
             # update
-            # self.update()
             data_list = [buf.get() for buf in self.buf_list]
             if self.mpi:
                 rank_data_list = self.comm.gather(data_list, root=0)
@@ -271,9 +297,6 @@ class multi_ppo:
             else:
                 self.update(data_list)
     
-            # animate
-            # if epoch == 1:
-            #     self.env.create_animate(self.save_path+'figure/')
             if self.mpi:
                 if self.rank == 0:
                     time_cost = time.time()-start_time 
@@ -300,11 +323,11 @@ class multi_ppo:
                 self.pi_optimizer.zero_grad()
                 loss_pi, pi_info = self.compute_loss_pi(data)
                 kl = pi_info['kl']
-               
                 
-                if kl > self.target_kl:
-                    print('Early stopping at step %d due to reaching max kl.'%i)
-                    break
+                # Comment out KL divergence based early stopping
+                # if kl > self.target_kl:
+                #     print('Early stopping at step %d due to reaching max kl.'%i)
+                #     break
                 
                 loss_pi.backward()
                 self.pi_optimizer.step()
@@ -316,6 +339,38 @@ class multi_ppo:
                 loss_v.backward()
                 self.vf_optimizer.step()
 
+    def check_early_stopping(self, success_rate, step_cost):
+        """
+        Check if training should stop based on success rate and step cost convergence.
+        Returns True if training should stop, False otherwise.
+        """
+        # Update best success rate and save model if improved
+        if success_rate > self.best_success_rate:
+            self.best_success_rate = success_rate
+            self.save_model('best_success_rate')
+            print(f'New best success rate: {success_rate:.2%}, saved model')
+
+        # Update step cost history
+        self.step_cost_history.append(step_cost)
+        if len(self.step_cost_history) > self.step_cost_window:
+            self.step_cost_history.pop(0)
+
+        # Check both success rate threshold and step cost convergence
+        success_rate_met = success_rate >= self.target_success_rate
+        step_cost_converged = False
+        
+        if len(self.step_cost_history) == self.step_cost_window:
+            recent_improvement = abs(self.step_cost_history[-1] - self.step_cost_history[0])
+            step_cost_converged = recent_improvement < self.step_cost_threshold
+            if step_cost_converged:
+                print(f'Step cost improvement {recent_improvement:.4f} below threshold {self.step_cost_threshold}')
+
+        # Only stop if both criteria are met
+        if success_rate_met and step_cost_converged:
+            print(f'Early stopping: Both success rate {success_rate:.2%} and step cost convergence criteria met')
+            return True
+
+        return False
 
     def compute_loss_v(self, data):
         obs, ret = data['obs'], data['ret']
@@ -361,9 +416,9 @@ class multi_ppo:
             os.makedirs(dir_name)
             torch.save(self.ac, fname_model.format(index))
             torch.save(state_dict, fname_check_point.format(index))
-                    
 
-                
-                
-                  
+
+
+
+
 
