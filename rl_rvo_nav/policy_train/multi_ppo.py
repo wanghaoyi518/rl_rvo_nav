@@ -139,12 +139,12 @@ class multi_ppo:
         self.train_v_iters=train_v_iters
         self.target_kl=target_kl    
 
-        # New parameters for success rate and step cost based early stopping
-        self.target_success_rate = 0.98  # Stop when success rate reaches 98%
-        self.step_cost_window = 5  # Window size for step cost improvement tracking
-        self.step_cost_threshold = 0.01  # Minimum improvement threshold for step cost
-        self.best_success_rate = 0.0  # Track best success rate
-        self.step_cost_history = []  # Track step cost history for convergence check
+        # # New parameters for success rate and step cost based early stopping
+        # self.target_success_rate = 0.98  # Stop when success rate reaches 98%
+        # self.step_cost_window = 5  # Window size for step cost improvement tracking
+        # self.step_cost_threshold = 0.01  # Minimum improvement threshold for step cost
+        # self.best_success_rate = 0.0  # Track best success rate
+        # self.step_cost_history = []  # Track step cost history for convergence check
 
         self.render = render
         self.render_freq = render_freq
@@ -276,10 +276,10 @@ class multi_ppo:
             avg_step_cost = current_step_cost / total_episodes if total_episodes > 0 else 0
             print(f'Success rate: {success_rate:.2%}, Average step cost: {avg_step_cost:.4f}')
 
-            # Check early stopping criteria
-            if self.check_early_stopping(success_rate, avg_step_cost):
-                print('Training stopped due to early stopping criteria')
-                break
+            # # Check early stopping criteria
+            # if self.check_early_stopping(success_rate, avg_step_cost):
+            #     print('Training stopped due to early stopping criteria')
+            #     break
 
             # Reset counters for next epoch
             success_count = 0
@@ -324,10 +324,10 @@ class multi_ppo:
                 loss_pi, pi_info = self.compute_loss_pi(data)
                 kl = pi_info['kl']
                 
-                # Comment out KL divergence based early stopping
-                # if kl > self.target_kl:
-                #     print('Early stopping at step %d due to reaching max kl.'%i)
-                #     break
+                # KL divergence based early stopping
+                if kl > self.target_kl:
+                    print('Early stopping at step %d due to reaching max kl.'%i)
+                    break
                 
                 loss_pi.backward()
                 self.pi_optimizer.step()
@@ -339,38 +339,38 @@ class multi_ppo:
                 loss_v.backward()
                 self.vf_optimizer.step()
 
-    def check_early_stopping(self, success_rate, step_cost):
-        """
-        Check if training should stop based on success rate and step cost convergence.
-        Returns True if training should stop, False otherwise.
-        """
-        # Update best success rate and save model if improved
-        if success_rate > self.best_success_rate:
-            self.best_success_rate = success_rate
-            self.save_model('best_success_rate')
-            print(f'New best success rate: {success_rate:.2%}, saved model')
+    # def check_early_stopping(self, success_rate, step_cost):
+    #     """
+    #     Check if training should stop based on success rate and step cost convergence.
+    #     Returns True if training should stop, False otherwise.
+    #     """
+    #     # Update best success rate and save model if improved
+    #     if success_rate > self.best_success_rate:
+    #         self.best_success_rate = success_rate
+    #         self.save_model('best_success_rate')
+    #         print(f'New best success rate: {success_rate:.2%}, saved model')
 
-        # Update step cost history
-        self.step_cost_history.append(step_cost)
-        if len(self.step_cost_history) > self.step_cost_window:
-            self.step_cost_history.pop(0)
+    #     # Update step cost history
+    #     self.step_cost_history.append(step_cost)
+    #     if len(self.step_cost_history) > self.step_cost_window:
+    #         self.step_cost_history.pop(0)
 
-        # Check both success rate threshold and step cost convergence
-        success_rate_met = success_rate >= self.target_success_rate
-        step_cost_converged = False
+    #     # Check both success rate threshold and step cost convergence
+    #     success_rate_met = success_rate >= self.target_success_rate
+    #     step_cost_converged = False
         
-        if len(self.step_cost_history) == self.step_cost_window:
-            recent_improvement = abs(self.step_cost_history[-1] - self.step_cost_history[0])
-            step_cost_converged = recent_improvement < self.step_cost_threshold
-            if step_cost_converged:
-                print(f'Step cost improvement {recent_improvement:.4f} below threshold {self.step_cost_threshold}')
+    #     if len(self.step_cost_history) == self.step_cost_window:
+    #         recent_improvement = abs(self.step_cost_history[-1] - self.step_cost_history[0])
+    #         step_cost_converged = recent_improvement < self.step_cost_threshold
+    #         if step_cost_converged:
+    #             print(f'Step cost improvement {recent_improvement:.4f} below threshold {self.step_cost_threshold}')
 
-        # Only stop if both criteria are met
-        if success_rate_met and step_cost_converged:
-            print(f'Early stopping: Both success rate {success_rate:.2%} and step cost convergence criteria met')
-            return True
+    #     # Only stop if both criteria are met
+    #     if success_rate_met and step_cost_converged:
+    #         print(f'Early stopping: Both success rate {success_rate:.2%} and step cost convergence criteria met')
+    #         return True
 
-        return False
+    #     return False
 
     def compute_loss_v(self, data):
         obs, ret = data['obs'], data['ret']

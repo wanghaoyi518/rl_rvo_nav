@@ -2,23 +2,24 @@ from ir_sim.env import env_base
 from math import sqrt, pi
 from gym import spaces
 from gym_env.envs.rvo_inter import rvo_inter
+from gym_env.envs.safe_distance_inter import SafeDistanceInter
 import numpy as np
 
 class ir_gym(env_base):
     def __init__(self, world_name, neighbors_region=5, neighbors_num=10, vxmax = 1.5, vymax = 1.5, env_train=True, acceler = 0.5, **kwargs):
         super(ir_gym, self).__init__(world_name=world_name, **kwargs)
 
-        # self.obs_mode = kwargs.get('obs_mode', 0)    # 0 drl_rvo, 1 drl_nrvo
-        # self.reward_mode = kwargs.get('reward_mode', 0)
-
         self.radius_exp = kwargs.get('radius_exp', 0.2)
-
         self.env_train = env_train
-
         self.nr = neighbors_region
         self.nm = neighbors_num
 
+        # Add navigation mode parameter
+        self.nav_mode = kwargs.get('nav_mode', 'rvo')  # 'rvo' or 'safe_distance'
+        
+        # Initialize both RVO and safe distance handlers
         self.rvo = rvo_inter(neighbors_region, neighbors_num, vxmax, vymax, acceler, env_train, self.radius_exp)
+        self.safe_distance = SafeDistanceInter(neighbors_region, neighbors_num, vxmax, vymax, acceler, env_train, self.radius_exp)
 
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(5,), dtype=np.float32)
         self.action_space = spaces.Box(low=np.array([-1, -1]), high=np.array([1, 1]), dtype=np.float32)
@@ -26,62 +27,76 @@ class ir_gym(env_base):
         self.reward_parameter = kwargs.get('reward_parameter', (0.2, 0.1, 0.1, 0.2, 0.2, 1, -20, 20)) 
         self.acceler = acceler
         self.arrive_flag_cur = False
+        self.ctime_threshold = kwargs.get('ctime_threshold', 2.0)  # Default collision time threshold of 2.0 seconds
 
         self.rvo_state_dim = 8
-        
+        self.safe_distance_state_dim = 6
 
     def cal_des_omni_list(self):
         des_vel_list = [robot.cal_des_vel_omni() for robot in self.robot_list]
         return des_vel_list
 
-
     def rvo_reward_list_cal(self, action_list, **kwargs):    
         ts = self.components['robots'].total_states() # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
 
-        rvo_reward_list = list(map(lambda robot_state, action: self.rvo_reward_cal(robot_state, ts[1], ts[2], ts[3], action, self.reward_parameter, **kwargs), ts[0], action_list))
+        if self.nav_mode == 'rvo':
+            rvo_reward_list = [self.rvo_reward_cal(robot_state, ts[1], ts[2], ts[3], action, self.reward_parameter, **kwargs) 
+                             for robot_state, action in zip(ts[0], action_list)]
+        else:  # safe_distance mode
+            rvo_reward_list = [self.safe_distance_reward_cal(robot_state, ts[1], ts[2], ts[3], action, self.reward_parameter, **kwargs) 
+                             for robot_state, action in zip(ts[0], action_list)]
 
         return rvo_reward_list
-    
-    def rvo_reward_cal(self, robot_state, nei_state_list, obs_cir_list, obs_line_list, action, reward_parameter=(0.2, 0.1, 0.1, 0.2, 0.2, 1, -10, 20), **kwargs):
-        
-        vo_flag, min_exp_time, min_dis = self.rvo.config_vo_reward(robot_state, nei_state_list, obs_cir_list, obs_line_list, action, **kwargs)
 
+    def rvo_reward_cal(self, robot_state, nei_state_list, obs_cir_list, obs_line_list, action, reward_parameter=(0.2, 0.1, 0.1, 0.2, 0.2, 1, -10, 20), **kwargs):
+        vo_flag, min_exp_time, min_dis = self.rvo.config_vo_reward(robot_state, nei_state_list, obs_cir_list, obs_line_list, action, **kwargs)
+        
         des_vel = np.round(np.squeeze(robot_state[-2:]), 2)
         
         p1, p2, p3, p4, p5, p6, p7, p8 = reward_parameter
 
-        dis_des = sqrt((action[0] - des_vel[0] )**2 + (action[1] - des_vel[1])**2)
+        dis_des = sqrt((action[0] - des_vel[0])**2 + (action[1] - des_vel[1])**2)
         max_dis_des = 3
-        dis_des_reward = - dis_des / max_dis_des #  (0-1)
-        exp_time_reward = - 0.2/(min_exp_time+0.2) # (0-1)
+        dis_des_reward = -dis_des / max_dis_des  # (0-1)
         
-        # rvo reward    
+        # RVO reward
         if vo_flag:
-            rvo_reward = p2 + p3 * dis_des_reward + p4 * exp_time_reward
+            rvo_reward = p2 + p3 * dis_des_reward
             
-            if min_exp_time < 0.1:
-                rvo_reward = p2 + p1 * p4 * exp_time_reward
+            if min_exp_time < self.ctime_threshold:
+                rvo_reward = p2 + p1 * p4 * (min_exp_time / self.ctime_threshold)
         else:
             rvo_reward = p5 + p6 * dis_des_reward
         
         rvo_reward = np.round(rvo_reward, 2)
-
+        
         return rvo_reward
 
-    def obs_move_reward_list(self, action_list, **kwargs):
-        ts = self.components['robots'].total_states() # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
+    def safe_distance_reward_cal(self, robot_state, nei_state_list, obs_cir_list, obs_line_list, action, reward_parameter=(0.2, 0.1, 0.1, 0.2, 0.2, 1, -10, 20), **kwargs):
+        _, collision_flag, min_dis = self.safe_distance.config_safe_distance_inf(robot_state, nei_state_list, obs_cir_list, obs_line_list, action, **kwargs)
+        
+        des_vel = np.round(np.squeeze(robot_state[-2:]), 2)
+        
+        p1, p2, p3, p4, p5, p6, p7, p8 = reward_parameter
 
-        obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action, **kwargs), self.robot_list, action_list))
-
-        obs_list = [l[0] for l in obs_reward_list]
-        reward_list = [l[1] for l in obs_reward_list]
-        done_list = [l[2] for l in obs_reward_list]
-        info_list = [l[3] for l in obs_reward_list]
-
-        return obs_list, reward_list, done_list, info_list
+        dis_des = sqrt((action[0] - des_vel[0])**2 + (action[1] - des_vel[1])**2)
+        max_dis_des = 3
+        dis_des_reward = -dis_des / max_dis_des  # (0-1)
+        
+        # Safe distance reward
+        if collision_flag:
+            safe_reward = p2 + p3 * dis_des_reward
+            
+            if min_dis < self.radius_exp:
+                safe_reward = p2 + p1 * p4 * (min_dis / self.radius_exp)
+        else:
+            safe_reward = p5 + p6 * dis_des_reward
+        
+        safe_reward = np.round(safe_reward, 2)
+        
+        return safe_reward
 
     def observation_reward(self, robot, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs):
-
         robot_omni_state = robot.omni_state()
         des_vel = np.squeeze(robot.cal_des_vel_omni())
        
@@ -93,22 +108,28 @@ class ir_gym(env_base):
         else:
             arrive_reward_flag = False
 
-        obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs)
+        if self.nav_mode == 'rvo':
+            obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs)
+        else:  # safe_distance mode
+            obs_vo_list, collision_flag, min_dis = self.safe_distance.config_safe_distance_inf(robot_omni_state, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs)
+            min_exp_time = min_dis  # Use minimum distance as time to collision
 
         radian = robot.state[2]
         cur_vel = np.squeeze(robot.vel_omni)
-        radius = robot.radius_collision* np.ones(1,)
+        radius = robot.radius_collision * np.ones(1,)
 
-        propri_obs = np.concatenate([ cur_vel, des_vel, radian, radius]) 
+        propri_obs = np.concatenate([cur_vel, des_vel, radian, radius]) 
         
         if len(obs_vo_list) == 0:
-            exter_obs = np.zeros((self.rvo_state_dim,))
+            if self.nav_mode == 'rvo':
+                exter_obs = np.zeros((self.rvo_state_dim,))
+            else:
+                exter_obs = np.zeros((self.safe_distance_state_dim,))
         else:
-            exter_obs = np.concatenate(obs_vo_list) # vo list
+            exter_obs = np.concatenate(obs_vo_list)
             
         observation = np.round(np.concatenate([propri_obs, exter_obs]), 2)
 
-        # dis2goal = sqrt( robot.state[0:2] - robot.goal[0:2])
         mov_reward = self.mov_reward(collision_flag, arrive_reward_flag, self.reward_parameter, min_exp_time)
 
         reward = mov_reward
@@ -186,6 +207,19 @@ class ir_gym(env_base):
         obs_list = list(map(lambda robot: self.observation(robot, ts[1], ts[2], ts[3]), self.robot_list))
 
         return obs_list
+
+    def obs_move_reward_list(self, action_list, **kwargs):
+        """Calculate observations, rewards, done flags, and info for all robots"""
+        ts = self.components['robots'].total_states()  # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
+        
+        # Calculate observations and rewards for each robot
+        results = [self.observation_reward(robot, ts[1], ts[2], ts[3], action, **kwargs) 
+                  for robot, action in zip(self.robot_list, action_list)]
+        
+        # Unzip the results
+        obs_list, reward_list, done_list, info_list = zip(*results)
+        
+        return list(obs_list), list(reward_list), list(done_list), list(info_list)
 
     @staticmethod
     def wraptopi(theta):

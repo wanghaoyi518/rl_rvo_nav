@@ -11,6 +11,7 @@ robots:
   interval: 1 
   square: [0, 0, 9, 9]
   circular: [5, 5, 4]
+  nav_mode: 'safe_distance'  # 'rvo' or 'safe_distance'
 
 # obs_lines:
 #   number: 2
