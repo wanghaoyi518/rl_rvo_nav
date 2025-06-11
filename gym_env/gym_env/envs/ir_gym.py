@@ -5,8 +5,12 @@ from gym_env.envs.rvo_inter import rvo_inter
 import numpy as np
 
 class ir_gym(env_base):
-    def __init__(self, world_name, neighbors_region=5, neighbors_num=10, vxmax = 1.5, vymax = 1.5, env_train=True, acceler = 0.5, **kwargs):
+    def __init__(self, world_name, neighbors_region=5, neighbors_num=10, vxmax = 1.5, vymax = 1.5, env_train=True, acceler = 0.5, seed=None, **kwargs):
         super(ir_gym, self).__init__(world_name=world_name, **kwargs)
+
+        # 设置随机种子
+        if seed is not None:
+            np.random.seed(seed)
 
         # self.obs_mode = kwargs.get('obs_mode', 0)    # 0 drl_rvo, 1 drl_nrvo
         # self.reward_mode = kwargs.get('reward_mode', 0)

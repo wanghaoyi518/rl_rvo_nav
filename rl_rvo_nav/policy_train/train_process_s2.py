@@ -67,7 +67,7 @@ par_train.add_argument('--clip_ratio', default=0.2)
 par_train.add_argument('--train_pi_iters', default=50)
 par_train.add_argument('--train_v_iters', default=50)
 par_train.add_argument('--target_kl',type=float, default=0.05)
-par_train.add_argument('--render', default=True)
+par_train.add_argument('--render', default=False)
 par_train.add_argument('--render_freq', default=50)
 par_train.add_argument('--con_train', action='store_true')
 par_train.add_argument('--seed', default=7)
@@ -77,14 +77,14 @@ par_train.add_argument('--figure_save_path', default='figure')
 par_train.add_argument('--save_path', default=str(cur_path / 'model_save') + '/')
 par_train.add_argument('--save_name', default= 'r')
 par_train.add_argument('--load_path', default=str(cur_path / 'model_save')+ '/')
-par_train.add_argument('--load_name', default='r4_0/r4_0_check_point_250.pt') # '/r4_0/r4_0_check_point_250.pt' 
+par_train.add_argument('--load_name', default='stage_1_best/r4_best.pt') 
 par_train.add_argument('--save_result', type=bool, default=True)
 par_train.add_argument('--lr_decay_epoch', type=int, default=1000)
 par_train.add_argument('--max_update_num', type=int, default=10)
 
-args = parser.parse_args(['--train_epoch', '2000', '--robot_number', '10', '--load_name', 'r4_0/r4_0_check_point_250.pt', '--con_train', '--use_gpu'])
+args = parser.parse_args(['--train_epoch', '1000', '--robot_number', '10', '--load_name', 'stage_1_best/r4_best.pt', '--con_train', '--use_gpu'])
 
-# decide the model path and model name 
+# decide the model path and model name
 model_path_check = args.save_path + args.save_name + str(args.robot_number) + '_{}'
 model_name_check = args.save_name + str(args.robot_number) +  '_{}'
 while os.path.isdir(model_path_check.format(counter)):
@@ -95,9 +95,9 @@ model_name = model_name_check.format(counter)
 
 load_fname = args.load_path + args.load_name
 
-env = gym.make(args.env_name, world_name=args.world_path, robot_number=args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=args.init_mode, env_train=args.env_train, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, full=args.full)
+env = gym.make(args.env_name, world_name=args.world_path, robot_number=args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=args.init_mode, env_train=args.env_train, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, full=args.full, seed=args.seed)
 
-test_env = gym.make(args.env_name, world_name=args.world_path, robot_number=args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=args.init_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, plot=False, full=args.full)
+test_env = gym.make(args.env_name, world_name=args.world_path, robot_number=args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=args.init_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, plot=False, full=args.full, seed=args.seed)
 
 policy = rnn_ac(env.observation_space, env.action_space, args.state_dim, args.rnn_input_dim, args.rnn_hidden_dim, 
                     args.hidden_sizes_ac, args.hidden_sizes_v, args.activation, args.output_activation, 

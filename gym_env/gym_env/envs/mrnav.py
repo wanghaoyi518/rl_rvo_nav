@@ -2,9 +2,9 @@ import gym
 from gym_env.envs.ir_gym import ir_gym
 
 class mrnav(gym.Env):
-    def __init__(self, world_name=None, neighbors_region=5, neighbors_num=10, **kwargs):
+    def __init__(self, world_name=None, neighbors_region=5, neighbors_num=10, seed=None, **kwargs):
         
-        self.ir_gym = ir_gym(world_name, neighbors_region, neighbors_num, **kwargs)
+        self.ir_gym = ir_gym(world_name, neighbors_region, neighbors_num, seed=seed, **kwargs)
         
         self.observation_space = self.ir_gym.observation_space
         self.action_space = self.ir_gym.action_space
