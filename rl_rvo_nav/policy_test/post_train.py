@@ -37,6 +37,10 @@ class post_train:
 
         o, r, d, ep_ret, ep_len, n = self.env.reset(mode=self.reset_mode), 0, False, 0, 0, 0
         ep_ret_list, speed_list, mean_speed_list, ep_len_list, sn = [], [], [], [], 0
+        
+        # 添加失败原因统计
+        collision_failures = 0
+        timeout_failures = 0
 
         print('Policy Test Start !')
 
@@ -83,7 +87,13 @@ class post_train:
                     ep_len_list.append(ep_len)
                     if self.inf_print: print('Successful, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                 else:
-                    if self.inf_print: print('Fail, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
+                    # 统计失败原因
+                    if np.max(d):  # 碰撞
+                        collision_failures += 1
+                        if self.inf_print: print('Fail (Collision), Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
+                    else:  # 超时
+                        timeout_failures += 1
+                        if self.inf_print: print('Fail (Timeout), Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
     
                 ep_ret_list.append(ep_ret)
                 mean_speed_list.append(speed)
@@ -112,12 +122,37 @@ class post_train:
         average_speed = np.round(np.mean(mean_speed_list),2)
         std_speed = np.round(np.std(mean_speed_list), 2)
 
+        # 计算失败率
+        total_failures = collision_failures + timeout_failures
+        collision_rate = collision_failures / total_failures if total_failures > 0 else 0
+        timeout_rate = timeout_failures / total_failures if total_failures > 0 else 0
+
         f = open( result_path + result_name, 'a')
-        print( 'policy_name: '+ policy_name, ' successful rate: {:.2%}'.format(sn/self.num_episodes), "average EpLen:", mean_len, "std length", std_len, 'average speed:', average_speed, 'std speed', std_speed, file = f)
+        print( 'policy_name: '+ policy_name, 
+               ' successful rate: {:.2%}'.format(sn/self.num_episodes),
+               "average EpLen:", mean_len, 
+               "std length", std_len, 
+               'average speed:', average_speed, 
+               'std speed', std_speed,
+               '\nFailure Analysis:',
+               'Collision failures:', collision_failures,
+               '({:.2%})'.format(collision_rate),
+               'Timeout failures:', timeout_failures,
+               '({:.2%})'.format(timeout_rate),
+               file = f)
         f.close() 
         
-        print( 'policy_name: '+ policy_name, ' successful rate: {:.2%}'.format(sn/self.num_episodes), "average EpLen:", mean_len, 'std length', std_len, 'average speed:', average_speed, 'std speed', std_speed)
-
+        print( 'policy_name: '+ policy_name, 
+               ' successful rate: {:.2%}'.format(sn/self.num_episodes),
+               "average EpLen:", mean_len, 
+               'std length', std_len, 
+               'average speed:', average_speed, 
+               'std speed', std_speed)
+        print('Failure Analysis:',
+              'Collision failures:', collision_failures,
+              '({:.2%})'.format(collision_rate),
+              'Timeout failures:', timeout_failures,
+              '({:.2%})'.format(timeout_rate))
 
     def load_policy(self, filename, std_factor=1, policy_dict=False):
 

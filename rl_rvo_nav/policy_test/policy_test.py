@@ -7,27 +7,42 @@ from rl_rvo_nav.policy_test.post_train import post_train
 import argparse
 import os
 from os.path import dirname, abspath
+import numpy as np
+import torch
+import random
+
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
 os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 
 parser = argparse.ArgumentParser(description='policy test')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='r4_0/r4_0_250.pt')  #   policy_dict=False    
+parser.add_argument('--model_name', default='r10_1/r10_1_500.pt')  #   policy_dict=False    
 # parser.add_argument('--model_name', default='r4_0/r4_0_check_point_250.pt')  with check point --> policy_dict=True
-parser.add_argument('--arg_name', default='r4_0/r4_0')
+parser.add_argument('--arg_name', default='r10_1/r10_1')
 parser.add_argument('--world_name', default='policy_test_world.yaml')  # policy_test_world_lines.yaml
-parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--render', action='store_true', default=False)
+parser.add_argument('--robot_number', type=int, default='10')
 parser.add_argument('--num_episodes', type=int, default='100')
 parser.add_argument('--dis_mode', type=int, default='3')  # 3 circle, 2 random, 5 for corridor
-parser.add_argument('--save', action='store_true')
+parser.add_argument('--save', action='store_true', default=True)
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
 parser.add_argument('--policy_dict', action='store_true')
 parser.add_argument('--once', action='store_true')
+parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
 
 policy_args = parser.parse_args()
+
+# 设置随机种子
+set_seed(policy_args.seed)
 
 cur_path = Path(__file__).parent.parent 
 
@@ -43,7 +58,7 @@ if policy_args.policy_type == 'drl':
     fname_model = model_base_path + '/' + policy_args.model_name 
     policy_name = 'drl_rvo'
     
-env = gym.make('mrnav-v1', world_name=policy_args.world_name, robot_number=policy_args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=policy_args.dis_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, goal_threshold=0.2, full=policy_args.full)
+env = gym.make('mrnav-v1', world_name=policy_args.world_name, robot_number=policy_args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=policy_args.dis_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, goal_threshold=0.2, full=policy_args.full, seed=policy_args.seed)
 
 policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode)
 

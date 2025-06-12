@@ -61,12 +61,12 @@ class ir_gym(env_base):
         
         # rvo reward    
         if vo_flag:
-            rvo_reward = p2 + p3 * dis_des_reward + p4 * exp_time_reward
+            rvo_reward = p2 + p3 * dis_des_reward + p4 * exp_time_reward #eq.5 line 2
             
             if min_exp_time < 0.1:
-                rvo_reward = p2 + p1 * p4 * exp_time_reward
+                rvo_reward = p2 + p1 * p4 * exp_time_reward #eq.5 line 3
         else:
-            rvo_reward = p5 + p6 * dis_des_reward
+            rvo_reward = p5 + p6 * dis_des_reward #eq.5 line 1
         
         rvo_reward = np.round(rvo_reward, 2)
 
