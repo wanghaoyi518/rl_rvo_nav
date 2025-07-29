@@ -31,7 +31,7 @@ par_env.add_argument('--reset_mode', default=3)
 par_env.add_argument('--mpi', default=False)
 
 par_env.add_argument('--neighbors_region', default=4)
-par_env.add_argument('--neighbors_num', type=int, default=5)   
+par_env.add_argument('--neighbors_num', type=int, default=10)   
 par_env.add_argument('--reward_parameter', type=float, default=(3.0, 0.3, 0.0, 6.0, 0.3, 3.0, -0, 0), nargs='+')
 par_env.add_argument('--env_train', default=True)
 par_env.add_argument('--random_bear', default=True)
@@ -77,12 +77,12 @@ par_train.add_argument('--figure_save_path', default='figure')
 par_train.add_argument('--save_path', default=str(cur_path / 'model_save') + '/')
 par_train.add_argument('--save_name', default= 'r')
 par_train.add_argument('--load_path', default=str(cur_path / 'model_save')+ '/')
-par_train.add_argument('--load_name', default='stage_1_best/r4_best.pt') 
+par_train.add_argument('--load_name', default='r4_3/r4_3_check_point_150.pt') 
 par_train.add_argument('--save_result', type=bool, default=True)
 par_train.add_argument('--lr_decay_epoch', type=int, default=1000)
 par_train.add_argument('--max_update_num', type=int, default=10)
 
-args = parser.parse_args(['--train_epoch', '1000', '--robot_number', '10', '--load_name', 'stage_1_best/r4_best.pt', '--con_train', '--use_gpu'])
+args = parser.parse_args(['--train_epoch', '1000', '--robot_number', '10', '--load_name', 'r4_3/r4_3_check_point_150.pt', '--con_train', '--use_gpu'])
 
 # decide the model path and model name
 model_path_check = args.save_path + args.save_name + str(args.robot_number) + '_{}'

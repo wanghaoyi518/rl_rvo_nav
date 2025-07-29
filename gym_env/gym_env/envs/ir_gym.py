@@ -99,6 +99,29 @@ class ir_gym(env_base):
 
         obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs)
 
+        # 当RVO检测到碰撞时，设置robot的collision_flag
+        if collision_flag:
+            robot.collision_flag = True
+            
+            # 尝试找出具体的碰撞对象
+            # 检查与其他机器人的碰撞
+            for other_robot in self.robot_list:
+                if other_robot.id != robot.id:
+                    # 计算距离
+                    dist = np.linalg.norm(robot.state[0:2] - other_robot.state[0:2])
+                    if dist <= robot.radius + other_robot.radius:
+                        other_robot.collision_flag = True
+                        print(f'collisions between robots {robot.id} and {other_robot.id}')
+                        
+                        # 记录碰撞对信息
+                        if 'collision_pairs' not in self.components:
+                            self.components['collision_pairs'] = []
+                        # 避免重复记录同一对碰撞
+                        pair = (min(robot.id, other_robot.id), max(robot.id, other_robot.id))
+                        if pair not in self.components['collision_pairs']:
+                            self.components['collision_pairs'].append(pair)
+                        break
+
         radian = robot.state[2]
         cur_vel = np.squeeze(robot.vel_omni)
         radius = robot.radius_collision* np.ones(1,)

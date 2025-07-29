@@ -24,15 +24,15 @@ os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 parser = argparse.ArgumentParser(description='policy test')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='r10_1/r10_1_500.pt')  #   policy_dict=False    
+parser.add_argument('--model_name', default='r4_3/r4_3_check_point_150.pt')  # 使用您当前的模型
 # parser.add_argument('--model_name', default='r4_0/r4_0_check_point_250.pt')  with check point --> policy_dict=True
-parser.add_argument('--arg_name', default='r10_1/r10_1')
+parser.add_argument('--arg_name', default='r4_3/r4_3')  # 匹配模型的参数文件
 parser.add_argument('--world_name', default='policy_test_world.yaml')  # policy_test_world_lines.yaml
 parser.add_argument('--render', action='store_true', default=False)
-parser.add_argument('--robot_number', type=int, default='10')
+parser.add_argument('--robot_number', type=int, default='4')  # 匹配预训练模型的机器人数量
 parser.add_argument('--num_episodes', type=int, default='100')
 parser.add_argument('--dis_mode', type=int, default='3')  # 3 circle, 2 random, 5 for corridor
-parser.add_argument('--save', action='store_true', default=True)
+parser.add_argument('--save', action='store_true', default=False)
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
 parser.add_argument('--policy_dict', action='store_true')
