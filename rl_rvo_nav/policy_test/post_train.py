@@ -6,6 +6,7 @@ from rl_rvo_nav.policy.policy_rnn_ac import rnn_ac
 from math import pi, sin, cos, sqrt
 import time 
 from datetime import datetime
+from rl_rvo_nav.agent_deadlock_detector import DistributedDeadlockManager
 
 class post_train:
     def __init__(self, env, num_episodes=100, max_ep_len=150, acceler_vel = 1.0, reset_mode=3, render=True, save=False, neighbor_region=4, neighbor_num=5, args=None, **kwargs):
@@ -44,6 +45,27 @@ class post_train:
         # 初始化VO Flag简化日志
         self.vo_flag_log_filename = f"vo_flag_log_{current_time}.txt"
         self.vo_flag_episodes = []  # 存储VO Flag信息
+        
+        # 初始化分布式死锁检测器
+        deadlock_config = {
+            'speed_buffer_size': kwargs.get('deadlock_speed_buffer_size', 20),
+            'small_speed_threshold': kwargs.get('deadlock_speed_threshold', 0.1),
+            'neighbor_speed_threshold': kwargs.get('deadlock_neighbor_speed_threshold', 0.1),
+            'min_neighbors_for_deadlock': kwargs.get('min_agents_for_deadlock', 2),
+            'sight_radius': kwargs.get('deadlock_distance_threshold', 3.0),
+            'detection_interval': kwargs.get('deadlock_detection_interval', 5)
+        }
+        
+        self.deadlock_manager = DistributedDeadlockManager(
+            num_agents=self.robot_number,
+            config=deadlock_config
+        )
+        
+        # 死锁状态
+        self.deadlock_active = False
+        self.deadlock_episodes = []
+        self.current_episode_deadlock_events = []  # 当前episode的死锁事件
+        self.deadlock_log_filename = f"deadlock_log_{current_time}.txt"
 
     def get_collision_robots(self):
         """检测发生碰撞的机器人编号"""
@@ -62,6 +84,177 @@ class post_train:
         if 'collision_pairs' in components:
             return components['collision_pairs']
         return []
+    
+    def update_deadlock_detection(self, timestep):
+        """
+        更新分布式死锁检测状态
+        
+        Args:
+            timestep: 当前时间步
+        """
+        robot_list = self.env.ir_gym.robot_list
+        
+        # 提取所有agent的状态信息
+        agent_positions = []
+        agent_velocities = []
+        agent_goals = []
+        
+        for robot in robot_list:
+            pos = np.array([robot.state[0, 0], robot.state[1, 0]])
+            vel = np.array([robot.vel_omni[0, 0], robot.vel_omni[1, 0]])
+            goal = np.array([robot.goal[0, 0], robot.goal[1, 0]])
+            
+            agent_positions.append(pos)
+            agent_velocities.append(vel)
+            agent_goals.append(goal)
+        
+        # 更新分布式死锁检测器
+        self.deadlock_manager.update_all_agents(
+            agent_positions=agent_positions,
+            agent_velocities=agent_velocities,
+            agent_goals=agent_goals,
+            timestep=timestep
+        )
+        
+        # 检测死锁
+        deadlock_agents, deadlock_groups = self.deadlock_manager.detect_deadlocks(timestep)
+        
+        # 更新死锁状态
+        if deadlock_agents and not self.deadlock_active:
+            self.deadlock_active = True
+            print(f"死锁激活: 时间步{timestep}, 涉及{len(deadlock_agents)}个agent, 死锁组: {deadlock_groups}")
+            self._log_deadlock_activation(timestep, deadlock_agents, deadlock_groups)
+        elif not deadlock_agents and self.deadlock_active:
+            self.deadlock_active = False
+            print(f"死锁解除: 时间步{timestep}")
+            self._log_deadlock_deactivation(timestep)
+        
+        # 记录当前时间步的死锁状态（无论是否激活）
+        if deadlock_agents:
+            self._log_timestep_deadlock(timestep, deadlock_agents, deadlock_groups)
+        
+        return len(deadlock_agents) > 0, deadlock_agents, deadlock_groups
+    
+    def _log_deadlock_activation(self, timestep, deadlock_agents, deadlock_groups):
+        """记录死锁激活信息"""
+        deadlock_info = {
+            'timestep': timestep,
+            'type': 'activation',
+            'agents': list(deadlock_agents),
+            'groups': [list(group) for group in deadlock_groups],
+            'summary': self.deadlock_manager.get_deadlock_summary()
+        }
+        self.deadlock_episodes.append(deadlock_info)
+    
+    def _log_timestep_deadlock(self, timestep, deadlock_agents, deadlock_groups):
+        """记录时间步死锁信息"""
+        timestep_info = {
+            'timestep': timestep,
+            'agents': list(deadlock_agents),
+            'groups': [list(group) for group in deadlock_groups],
+            'summary': self.deadlock_manager.get_deadlock_summary()
+        }
+        self.current_episode_deadlock_events.append(timestep_info)
+    
+    def _log_deadlock_deactivation(self, timestep):
+        """记录死锁解除信息"""
+        deadlock_info = {
+            'timestep': timestep,
+            'type': 'deactivation',
+            'agents': [],
+            'center': None,
+            'region': None
+        }
+        self.deadlock_episodes.append(deadlock_info)
+    
+    def get_deadlock_info(self):
+        """获取当前死锁信息"""
+        return self.deadlock_manager.get_deadlock_summary()
+    
+    def save_deadlock_log(self, save_path):
+        """保存死锁日志"""
+        log_path = Path(save_path) / self.deadlock_log_filename
+        
+        with open(log_path, 'w') as f:
+            f.write("Deadlock Detection Log\n")
+            f.write("=" * 50 + "\n\n")
+            
+            # 记录死锁检测的主要配置
+            f.write("Distributed Deadlock Detection Configuration:\n")
+            f.write("-" * 40 + "\n")
+            config = self.deadlock_manager.agent_detectors[0]  # 使用第一个agent的配置作为示例
+            f.write(f"Speed Buffer Size: {config.speed_buffer_size}\n")
+            f.write(f"Small Speed Threshold: {config.small_speed_threshold} m/s\n")
+            f.write(f"Neighbor Speed Threshold: {config.neighbor_speed_threshold} m/s\n")
+            f.write(f"Min Neighbors for Deadlock: {config.min_neighbors_for_deadlock}\n")
+            f.write(f"Sight Radius: {config.sight_radius} meters\n")
+            f.write(f"Detection Interval: {config.detection_interval} timesteps\n")
+            f.write(f"Total Agents: {self.deadlock_manager.num_agents}\n")
+            f.write("\n")
+            
+            # 记录检测统计信息
+            f.write("Detection Statistics:\n")
+            f.write("-" * 30 + "\n")
+            f.write(f"Total Episodes: {self.num_episodes}\n")
+            f.write(f"Episodes with Deadlock: {len([ep for ep in self.deadlock_episodes if 'episode' in ep])}\n")
+            f.write(f"Total Deadlock Events: {len(self.deadlock_episodes)}\n")
+            f.write(f"Current Deadlock Agents: {len(self.deadlock_manager.deadlock_agents)}\n")
+            f.write(f"Current Deadlock Groups: {len(self.deadlock_manager.deadlock_groups)}\n")
+            f.write("\n")
+            
+            if self.deadlock_episodes:
+                f.write("Deadlock Events by Episode:\n")
+                f.write("=" * 50 + "\n")
+                
+                # 按episode组织信息
+                episode_events = {}
+                activation_events = []
+                
+                for event in self.deadlock_episodes:
+                    if 'episode' in event:
+                        # 这是episode级别的信息
+                        episode_events[event['episode']] = event
+                    elif 'type' in event and event['type'] == 'activation':
+                        # 这是激活事件
+                        activation_events.append(event)
+                
+                # 记录每个episode的死锁信息
+                for episode_num in sorted(episode_events.keys()):
+                    episode_info = episode_events[episode_num]
+                    f.write(f"\nEpisode {episode_num}:\n")
+                    f.write("-" * 20 + "\n")
+                    f.write(f"Episode Length: {episode_info['episode_length']}\n")
+                    f.write(f"Total Deadlock Timesteps: {episode_info['total_deadlock_timesteps']}\n")
+                    
+                    if episode_info['deadlock_events']:
+                        f.write(f"Deadlock Events:\n")
+                        for event in episode_info['deadlock_events']:
+                            f.write(f"  Timestep {event['timestep']}: Agents {event['agents']}, Groups {event['groups']}\n")
+                    else:
+                        f.write("No deadlock events in this episode.\n")
+                    
+                    f.write("\n")
+                
+                # 记录激活事件
+                if activation_events:
+                    f.write("\nDeadlock Activation Events:\n")
+                    f.write("-" * 30 + "\n")
+                    for event in activation_events:
+                        f.write(f"Timestep {event['timestep']}: {event['type']}\n")
+                        f.write(f"  Agents: {event['agents']}\n")
+                        f.write(f"  Groups: {event['groups']}\n")
+                        f.write("\n")
+            else:
+                f.write("No deadlock events detected during this test.\n")
+                f.write("This could mean:\n")
+                f.write("1. The test scenario did not trigger deadlock conditions\n")
+                f.write("2. The detection parameters are too strict\n")
+                f.write("3. The agents navigated successfully without conflicts\n")
+                f.write("\n")
+        
+        print(f"死锁日志已保存到: {log_path}")
+        if not self.deadlock_episodes:
+            print("注意：未检测到死锁事件，但日志文件已创建并包含配置信息")
 
     def get_robot_neighbors(self, robot_id, action_list):
         """获取指定机器人正在考虑的neighbor信息"""
@@ -387,6 +580,10 @@ class post_train:
 
             o, r, d, info = self.env.step_ir(abs_action_list, vel_type = 'omni')
 
+            # 更新死锁检测
+            deadlock_detected, deadlock_agents, deadlock_groups = \
+                self.update_deadlock_detection(ep_len)
+
             # 记录当前timestep的详细信息
             self.record_timestep_info(ep_len, o, abs_action_list, r, d, info)
 
@@ -432,11 +629,25 @@ class post_train:
                 o, r, d, ep_ret, ep_len = self.env.reset(mode=self.reset_mode), 0, False, 0, 0
                 # 重置碰撞对信息
                 self.env.ir_gym.reset_collision_pairs()
-                # 重置当前episode历史记录
+                                # 重置当前episode历史记录
                 self.current_episode_history = []
                 # 重置VO Flag历史记录
                 if hasattr(self, 'current_vo_flag_history'):
                     self.current_vo_flag_history = []
+                # 保存当前episode的死锁信息
+                if self.current_episode_deadlock_events:
+                    episode_deadlock_info = {
+                        'episode': n,
+                        'deadlock_events': self.current_episode_deadlock_events.copy(),
+                        'total_deadlock_timesteps': len(self.current_episode_deadlock_events),
+                        'episode_length': ep_len
+                    }
+                    self.deadlock_episodes.append(episode_deadlock_info)
+                
+                # 重置死锁检测器
+                self.deadlock_manager.reset()
+                self.deadlock_active = False
+                self.current_episode_deadlock_events = []
 
                 n += 1
 
@@ -457,6 +668,7 @@ class post_train:
         if result_path:
             self.save_collision_log(result_path)
             self.save_vo_flag_log(result_path)
+            self.save_deadlock_log(result_path)
 
         mean_len = 0 if len(ep_len_list) == 0 else np.round(np.mean(ep_len_list), 2)
         std_len = 0 if len(ep_len_list) == 0 else np.round(np.std(ep_len_list), 2)

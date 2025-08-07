@@ -1,0 +1,29 @@
+# 分布式死锁检测配置文件
+
+# 速度缓冲区参数
+speed_buffer_size: 20            # 速度历史缓冲区大小
+small_speed_threshold: 0.1       # 自身低速阈值（米/秒）
+neighbor_speed_threshold: 0.1    # 邻居低速阈值（米/秒）
+
+# 邻居检测参数
+min_neighbors_for_deadlock: 2    # 触发死锁的最小邻居数
+sight_radius: 3.0                # 视野半径（米）
+
+# 检测控制参数
+detection_interval: 5            # 检测间隔（时间步）
+
+# 触发类型配置
+enable_speed_buffer_trigger: true    # 启用速度缓冲区触发
+enable_common_point_trigger: true    # 启用共同点触发
+enable_collision_risk_trigger: true  # 启用碰撞风险触发
+
+# 碰撞风险参数
+collision_distance_threshold: 0.5    # 碰撞距离阈值（米）
+
+# 日志参数
+enable_deadlock_logging: true    # 是否启用死锁日志记录
+log_detailed_info: true          # 是否记录详细信息
+
+# 调试参数
+debug_mode: false                # 调试模式
+verbose_output: true             # 详细输出
