@@ -7,6 +7,7 @@ from math import pi, sin, cos, sqrt
 import time 
 from datetime import datetime
 from rl_rvo_nav.agent_deadlock_detector import DistributedDeadlockManager
+from rl_rvo_nav.python_pnr import MAPFManager, SimpleEnvAdapter
 
 class post_train:
     def __init__(self, env, num_episodes=100, max_ep_len=150, acceler_vel = 1.0, reset_mode=3, render=True, save=False, neighbor_region=4, neighbor_num=5, args=None, **kwargs):
@@ -32,6 +33,11 @@ class post_train:
         self.nm = neighbor_num
         self.args = args
         
+        # 可选：多段 waypoint 支持（不影响默认流程）
+        self.waypoint_sequences = kwargs.get('waypoint_sequences', None)
+        self.waypoint_goal_threshold = float(kwargs.get('waypoint_goal_threshold', 0.2))
+        self._waypoint_index = {}
+
         # 初始化碰撞记录
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.collision_log_filename = f"collision_neighbor_{current_time}.txt"
@@ -60,12 +66,59 @@ class post_train:
             num_agents=self.robot_number,
             config=deadlock_config
         )
+        # corridor 场景：降低检测间隔与邻居数量阈值（若配置未覆盖）
+        for det in self.deadlock_manager.agent_detectors.values():
+            det.min_neighbors_for_deadlock = min(det.min_neighbors_for_deadlock, 1)
+            det.detection_interval = 1
+            # 放宽碰撞风险半径并扩大视野
+            if not hasattr(det, 'collision_risk_distance_threshold'):
+                setattr(det, 'collision_risk_distance_threshold', 2.0)
+            else:
+                det.collision_risk_distance_threshold = max(1.5, det.collision_risk_distance_threshold)
+            det.sight_radius = max(5.0, det.sight_radius)
         
         # 死锁状态
         self.deadlock_active = False
         self.deadlock_episodes = []
         self.current_episode_deadlock_events = []  # 当前episode的死锁事件
         self.deadlock_log_filename = f"deadlock_log_{current_time}.txt"
+
+        # MAPF 管理器 & 环境适配器
+        self.mapf_manager = MAPFManager()
+        self.env_adapter = SimpleEnvAdapter(self.env)
+
+    def _init_waypoints(self):
+        """在每次环境 reset 后，按提供的 waypoint 序列设置初始目标。"""
+        if not self.waypoint_sequences:
+            return
+        for aid in range(self.robot_number):
+            seq = self.waypoint_sequences.get(aid)
+            if not seq or len(seq) < 2:
+                continue
+            # 约定：seq[0] 为起点，seq[1] 为第一段目标
+            self._waypoint_index[aid] = 1
+            target = np.array(seq[1], dtype=float).reshape(2, 1)
+            self.env.ir_gym.robot_list[aid].goal = target
+
+    def _update_waypoints(self):
+        """在每个 timestep 后推进到下一个 waypoint（若抵达阈值）。"""
+        if not self.waypoint_sequences:
+            return
+        for aid in range(self.robot_number):
+            seq = self.waypoint_sequences.get(aid)
+            if not seq or len(seq) < 2:
+                continue
+            idx = self._waypoint_index.get(aid, 1)
+            if idx >= len(seq):
+                continue
+            robot = self.env.ir_gym.robot_list[aid]
+            pos = np.array([robot.state[0, 0], robot.state[1, 0]])
+            cur_target = np.array(seq[idx], dtype=float)
+            if np.linalg.norm(pos - cur_target) <= self.waypoint_goal_threshold and idx < len(seq) - 1:
+                idx += 1
+                self._waypoint_index[aid] = idx
+                next_target = np.array(seq[idx], dtype=float).reshape(2, 1)
+                robot.goal = next_target
 
     def get_collision_robots(self):
         """检测发生碰撞的机器人编号"""
@@ -542,6 +595,8 @@ class post_train:
             model_action = self.load_policy(policy_path, self.std_factor, policy_dict=policy_dict)
 
         o, r, d, ep_ret, ep_len, n = self.env.reset(mode=self.reset_mode), 0, False, 0, 0, 0
+        # 初始化 waypoint 目标（若提供）
+        self._init_waypoints()
         # 初始化碰撞对信息
         self.env.ir_gym.reset_collision_pairs()
         ep_ret_list, speed_list, mean_speed_list, ep_len_list, sn = [], [], [], [], 0
@@ -580,9 +635,45 @@ class post_train:
 
             o, r, d, info = self.env.step_ir(abs_action_list, vel_type = 'omni')
 
+            # 推进 waypoint（若提供）
+            self._update_waypoints()
+
             # 更新死锁检测
             deadlock_detected, deadlock_agents, deadlock_groups = \
                 self.update_deadlock_detection(ep_len)
+
+            # 如果检测到死锁，尝试启动 MAPF 会话
+            if deadlock_detected and deadlock_groups:
+                # 组装 agent_states
+                positions = {}
+                goals = {}
+                for aid, robot in enumerate(self.env.ir_gym.robot_list):
+                    positions[aid] = np.array([robot.state[0, 0], robot.state[1, 0]], dtype=float)
+                    goals[aid] = np.array([robot.goal[0, 0], robot.goal[1, 0]], dtype=float)
+                agent_states = {"positions": positions, "goals": goals}
+
+                # waypoints：复用构造时传入的序列
+                waypoints_dict = self.waypoint_sequences if self.waypoint_sequences else {aid: [goals[aid]] for aid in positions.keys()}
+
+                self.mapf_manager.try_start(deadlock_groups, agent_states, self.env_adapter, waypoints_dict, ep_len)
+
+            # 若 MAPF 活跃，则推进执行并覆盖动作目标
+            active_any = any(self.mapf_manager.is_active(aid) for aid in range(self.robot_number))
+            if active_any:
+                cur_positions = {aid: np.array([r.state[0, 0], r.state[1, 0]], dtype=float) for aid, r in enumerate(self.env.ir_gym.robot_list)}
+                # 使用底层 ir_gym 的步长
+                self.mapf_manager.step_execute(cur_positions, self.env.ir_gym.step_time)
+                # 将处于 MAPF 的 agent 的动作替换为朝向下一个目标点的简单跟踪（覆盖 abs_action_list）
+                for aid in range(self.robot_number):
+                    if self.mapf_manager.is_active(aid):
+                        target = self.mapf_manager.next_target(aid)
+                        if target is not None:
+                            pos = cur_positions[aid]
+                            vec = target - pos
+                            if np.linalg.norm(vec) > 1e-6:
+                                vec = vec / np.linalg.norm(vec)
+                            # 简单将速度幅值限制为当前加速度系数
+                            abs_action_list[aid] = vec * self.acceler_vel
 
             # 记录当前timestep的详细信息
             self.record_timestep_info(ep_len, o, abs_action_list, r, d, info)
@@ -627,6 +718,8 @@ class post_train:
                 speed_list = []
 
                 o, r, d, ep_ret, ep_len = self.env.reset(mode=self.reset_mode), 0, False, 0, 0
+                # 重置后恢复到第一段 waypoint（若提供）
+                self._init_waypoints()
                 # 重置碰撞对信息
                 self.env.ir_gym.reset_collision_pairs()
                                 # 重置当前episode历史记录

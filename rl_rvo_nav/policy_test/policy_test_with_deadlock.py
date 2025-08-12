@@ -51,11 +51,11 @@ parser.add_argument('--model_path', default='policy_train/model_save')
 parser.add_argument('--model_name', default='r2_2/r2_2_150.pt')  # 使用您当前的模型
 # parser.add_argument('--model_name', default='r4_0/r4_0_check_point_250.pt')  with check point --> policy_dict=True
 parser.add_argument('--arg_name', default='r2_2/r2_2')  # 匹配模型的参数文件
-parser.add_argument('--world_name', default='policy_test_world.yaml')  # policy_test_world_lines.yaml
+parser.add_argument('--world_name', default='policy_test_world_corridor.yaml')  # corridor 定制
 parser.add_argument('--render', action='store_true', default=False)
 parser.add_argument('--robot_number', type=int, default='2')  # 匹配预训练模型的机器人数量
-parser.add_argument('--num_episodes', type=int, default='100')
-parser.add_argument('--dis_mode', type=int, default='2')  # 3 circle, 2 random, 5 for corridor
+parser.add_argument('--num_episodes', type=int, default='3')
+parser.add_argument('--dis_mode', type=int, default='0')  # 0 custom for corridor
 parser.add_argument('--save', action='store_true', default=False)
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
@@ -111,6 +111,12 @@ if policy_args.policy_type == 'drl':
         sys.exit(1)
     
 env = gym.make('mrnav-v1', world_name=policy_args.world_name, robot_number=policy_args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=policy_args.dis_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, goal_threshold=0.2, full=policy_args.full, seed=policy_args.seed)
+
+# 定义每个agent的全局waypoint序列（连续坐标，仅x,y）
+waypoint_sequences = {
+    0: [np.array([0.0, 0.0]), np.array([6.0, 5.0]), np.array([10.0, 10.0])],
+    1: [np.array([10.0, 0.0]), np.array([4.0, 5.0]), np.array([0.0, 10.0])],
+}
 
 policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode)
 
@@ -188,6 +194,8 @@ pt = post_train(
     save=policy_args.save, 
     show_traj=policy_args.show_traj, 
     figure_format='eps',
+    waypoint_sequences=waypoint_sequences,
+    waypoint_goal_threshold=0.2,
     **deadlock_kwargs  # 传入死锁检测参数
 )
 

@@ -20,9 +20,10 @@ class AgentDeadlockDetector:
                  speed_buffer_size: int = 20,
                  small_speed_threshold: float = 0.1,
                  neighbor_speed_threshold: float = 0.1,
-                 min_neighbors_for_deadlock: int = 2,
+                  min_neighbors_for_deadlock: int = 2,
                  sight_radius: float = 3.0,
-                 detection_interval: int = 5):
+                  detection_interval: int = 5,
+                  collision_risk_distance_threshold: float = 1.0):
         """
         初始化单个agent的死锁检测器
         
@@ -45,6 +46,7 @@ class AgentDeadlockDetector:
         # 邻居相关参数
         self.min_neighbors_for_deadlock = min_neighbors_for_deadlock
         self.sight_radius = sight_radius
+        self.collision_risk_distance_threshold = collision_risk_distance_threshold
         
         # 检测控制
         self.detection_interval = detection_interval
@@ -185,7 +187,7 @@ class AgentDeadlockDetector:
         
         # 检查是否有非常近的邻居（碰撞风险）
         for distance, neighbor_detector in self.neighbors:
-            if distance < 0.5:  # 距离阈值
+            if distance < self.collision_risk_distance_threshold:
                 return True
         
         return False
@@ -306,6 +308,11 @@ class DistributedDeadlockManager:
             deadlock_detected, trigger_type = self.agent_detectors[i].detect_deadlock(timestep)
             if deadlock_detected:
                 deadlock_agents.add(i)
+                # 额外：将风险半径内的邻居也加入死锁集合（便于二者一起进入MAPF）
+                risk_r = getattr(self.agent_detectors[i], 'collision_risk_distance_threshold', 1.0)
+                for dist, nei_det in self.agent_detectors[i].neighbors:
+                    if dist <= risk_r:
+                        deadlock_agents.add(nei_det.agent_id)
         
         # 识别死锁组（相互影响的agent组）
         deadlock_groups = self._identify_deadlock_groups(deadlock_agents)

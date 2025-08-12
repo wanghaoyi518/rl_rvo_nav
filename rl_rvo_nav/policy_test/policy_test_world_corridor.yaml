@@ -1,0 +1,37 @@
+world:
+  world_height: 10
+  world_width: 10
+  step_time: 0.1
+
+robots:
+  robot_number: 2
+  robot_mode: 'diff'
+  robot_init_mode: 0
+  init_state_list: [[0, 0, 0], [10, 0, 0]]
+  goal_list: [[6, 5, 0], [4, 5, 0]]
+  radius_list: [0.2, 0.2]
+  vel_max: [1.5, 1.5]
+  radius_exp: 0.2
+  interval: 1
+  square: [0, 0, 10, 10]
+  circular: [5, 5, 4]
+
+obs_polygons:
+  number: 2
+  vertexes_list:
+    - [ [4, 6], [6, 6], [6, 10], [4, 10] ]
+    - [ [4, 0], [6, 0], [6, 4], [4, 4] ]
+
+obs_lines:
+  number: 8
+  obs_line_states:
+    - [4, 6, 6, 6]
+    - [6, 6, 6, 10]
+    - [6, 10, 4, 10]
+    - [4, 10, 4, 6]
+    - [4, 0, 6, 0]
+    - [6, 0, 6, 4]
+    - [6, 4, 4, 4]
+    - [4, 4, 4, 0]
+
+
