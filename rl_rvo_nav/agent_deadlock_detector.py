@@ -22,8 +22,9 @@ class AgentDeadlockDetector:
                  neighbor_speed_threshold: float = 0.1,
                   min_neighbors_for_deadlock: int = 2,
                  sight_radius: float = 3.0,
-                  detection_interval: int = 5,
-                  collision_risk_distance_threshold: float = 1.0):
+                   detection_interval: int = 5,
+                   collision_risk_distance_threshold: float = 3.0,
+                   activation_hysteresis_steps: int = 3):
         """
         初始化单个agent的死锁检测器
         
@@ -51,6 +52,10 @@ class AgentDeadlockDetector:
         # 检测控制
         self.detection_interval = detection_interval
         self.last_detection_step = 0
+        # 激活迟滞：需要连续满足若干步才进入死锁（首次与再次激活都适用）
+        self.activation_hysteresis_steps = max(1, activation_hysteresis_steps)
+        self._satisfied_streak = 0
+        self._last_satisfied_trigger_type = None
         
         # 状态缓冲区
         self.speed_buffer = deque(maxlen=speed_buffer_size)
@@ -107,6 +112,9 @@ class AgentDeadlockDetector:
         # 更新邻居信息
         self.neighbors = neighbor_agents
         
+        # 存储当前速度用于碰撞风险检测
+        self.current_velocity = current_velocity
+        
     def detect_deadlock(self, timestep: int) -> Tuple[bool, Optional[DeadlockTriggerType]]:
         """
         检测死锁状态
@@ -123,33 +131,50 @@ class AgentDeadlockDetector:
         
         self.last_detection_step = timestep
         
-        # 检查各种触发条件
+        # 综合判断触发类型（单步）
+        triggered_type = None
         if self._check_speed_buffer_trigger():
-            self.deadlock_detected = True
-            self.deadlock_trigger_type = DeadlockTriggerType.SPEED_BUFFER
-            return True, DeadlockTriggerType.SPEED_BUFFER
-            
-        if self._check_common_point_trigger():
-            self.deadlock_detected = True
-            self.deadlock_trigger_type = DeadlockTriggerType.COMMON_POINT
-            return True, DeadlockTriggerType.COMMON_POINT
-            
-        if self._check_collision_risk_trigger():
-            self.deadlock_detected = True
-            self.deadlock_trigger_type = DeadlockTriggerType.COLLISION_RISK
-            return True, DeadlockTriggerType.COLLISION_RISK
-        
-        # 重置死锁状态
-        self.deadlock_detected = False
-        self.deadlock_trigger_type = None
-        return False, None
+            triggered_type = DeadlockTriggerType.SPEED_BUFFER
+        elif self._check_common_point_trigger():
+            triggered_type = DeadlockTriggerType.COMMON_POINT
+        elif self._check_collision_risk_trigger():
+            triggered_type = DeadlockTriggerType.COLLISION_RISK
+
+        # 维护连续满足计数
+        if triggered_type is not None:
+            self._satisfied_streak += 1
+            self._last_satisfied_trigger_type = triggered_type
+        else:
+            self._satisfied_streak = 0
+
+        # 未在死锁中：仅当连续满足达到阈值才激活
+        if not self.deadlock_detected:
+            if self._satisfied_streak >= self.activation_hysteresis_steps:
+                self.deadlock_detected = True
+                self.deadlock_trigger_type = self._last_satisfied_trigger_type
+                return True, self.deadlock_trigger_type
+            else:
+                self.deadlock_detected = False
+                self.deadlock_trigger_type = None
+                return False, None
+
+        # 已在死锁中：若当步不再满足，立即解除；否则保持
+        if triggered_type is None:
+            self.deadlock_detected = False
+            self.deadlock_trigger_type = None
+            self._satisfied_streak = 0
+            return False, None
+        else:
+            # 维持死锁状态
+            return True, self.deadlock_trigger_type
     
     def _check_speed_buffer_trigger(self) -> bool:
         """
         速度缓冲区触发检测
         参考C++实现: SingleNeighbourMeanSpeedMAPFTrigger()
         """
-        if not self.neighbors:
+        # 检查邻居数量是否达到阈值
+        if len(self.neighbors) < self.min_neighbors_for_deadlock:
             return False
         
         # 检查自身速度是否低于阈值
@@ -176,19 +201,39 @@ class AgentDeadlockDetector:
         if self.distance_to_goal >= self.sight_radius:
             return False
         
+        # 检查速度是否足够低（真正的死锁应该是低速状态）
+        if self.mean_speed >= self.small_speed_threshold:
+            return False
+        
+        # 检查邻居速度是否也足够低
+        for distance, neighbor_detector in self.neighbors:
+            if neighbor_detector.mean_speed >= self.neighbor_speed_threshold:
+                return False
+        
         return True
     
     def _check_collision_risk_trigger(self) -> bool:
         """
         碰撞风险触发检测
         """
-        if not self.neighbors:
+        # 检查邻居数量是否达到阈值
+        if len(self.neighbors) < self.min_neighbors_for_deadlock:
             return False
         
         # 检查是否有非常近的邻居（碰撞风险）
         for distance, neighbor_detector in self.neighbors:
             if distance < self.collision_risk_distance_threshold:
-                return True
+                # 检查当前速度（高速碰撞风险）
+                current_speed = np.linalg.norm(self.current_velocity) if hasattr(self, 'current_velocity') else self.mean_speed
+                neighbor_speed = neighbor_detector.mean_speed
+                
+                # 如果两个智能体都在高速移动且距离很近，触发死锁检测
+                if current_speed > 0.5 and neighbor_speed > 0.5:
+                    return True
+                
+                # 或者如果速度很低且距离很近（传统死锁）
+                if self.mean_speed < self.small_speed_threshold and neighbor_detector.mean_speed < self.neighbor_speed_threshold:
+                    return True
         
         return False
     
@@ -217,6 +262,8 @@ class AgentDeadlockDetector:
         self.mean_speed = 0.0
         self.neighbors.clear()
         self.last_detection_step = 0
+        self._satisfied_streak = 0
+        self._last_satisfied_trigger_type = None
 
 class DistributedDeadlockManager:
     """
@@ -243,7 +290,8 @@ class DistributedDeadlockManager:
             'neighbor_speed_threshold': 0.1,
             'min_neighbors_for_deadlock': 2,
             'sight_radius': 3.0,
-            'detection_interval': 5
+            'detection_interval': 5,
+            'activation_hysteresis_steps': 3
         }
         
         if config:
@@ -374,8 +422,9 @@ class DistributedDeadlockManager:
         for i in deadlock_agents:
             for j in deadlock_agents:
                 if i != j:
-                    # 如果两个agent是邻居，则合并
-                    if j in [neighbor_id for _, neighbor_id in self.agent_detectors[i].neighbors]:
+                    # 如果两个agent是邻居，则合并（注意 neighbors 中存的是 detector 对象而非ID）
+                    neighbor_ids = [neighbor_detector.agent_id for _, neighbor_detector in self.agent_detectors[i].neighbors]
+                    if j in neighbor_ids:
                         union(i, j)
         
         # 收集连通分量

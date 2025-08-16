@@ -99,6 +99,14 @@ class MAPFManager:
 
         # 清理已完成会话
         for sid in finished_sessions:
+            # 打印会话结束时的位姿信息（便于分析退出点是否安全）
+            try:
+                agents = sorted(list(self.active_sessions[sid].group_agent_ids)) if sid in self.active_sessions else []
+                if agents:
+                    info = {aid: current_positions.get(aid) for aid in agents}
+                    print(f"[MAPFManager] session {sid} finished; final positions: {info}")
+            except Exception:
+                pass
             session = self.active_sessions.pop(sid, None)
             if session is None:
                 continue

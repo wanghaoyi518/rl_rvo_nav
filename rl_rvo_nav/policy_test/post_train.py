@@ -51,15 +51,24 @@ class post_train:
         # 初始化VO Flag简化日志
         self.vo_flag_log_filename = f"vo_flag_log_{current_time}.txt"
         self.vo_flag_episodes = []  # 存储VO Flag信息
+        # MAPF 让行冷却（避免帧间抖动）：agent_id -> remaining steps
+        self._yield_cooldown = {}
+        # 死锁解除后的短时安全护栏步数与目标对象
+        self._post_release_guard = 0
+        self._post_release_agents = []
+        self._post_release_safe_streak = 0
+        # 最近一次 MAPF 会话涉及的 agent 集合（用于解除后仅对相关体施加护栏）
+        self._last_mapf_group = set()
         
         # 初始化分布式死锁检测器
         deadlock_config = {
             'speed_buffer_size': kwargs.get('deadlock_speed_buffer_size', 20),
-            'small_speed_threshold': kwargs.get('deadlock_speed_threshold', 0.1),
-            'neighbor_speed_threshold': kwargs.get('deadlock_neighbor_speed_threshold', 0.1),
-            'min_neighbors_for_deadlock': kwargs.get('min_agents_for_deadlock', 2),
+            'small_speed_threshold': kwargs.get('deadlock_speed_threshold', 0.05),
+            'neighbor_speed_threshold': kwargs.get('deadlock_neighbor_speed_threshold', 0.05),
+            'min_neighbors_for_deadlock': kwargs.get('min_agents_for_deadlock', 1),
             'sight_radius': kwargs.get('deadlock_distance_threshold', 3.0),
-            'detection_interval': kwargs.get('deadlock_detection_interval', 5)
+            'detection_interval': kwargs.get('deadlock_detection_interval', 10),
+            'activation_hysteresis_steps': 10  # 增加激活延迟，避免误触发
         }
         
         self.deadlock_manager = DistributedDeadlockManager(
@@ -67,14 +76,14 @@ class post_train:
             config=deadlock_config
         )
         # corridor 场景：降低检测间隔与邻居数量阈值（若配置未覆盖）
+        # 保持用户/配置提供的min_neighbors_for_deadlock，不做强制覆盖
         for det in self.deadlock_manager.agent_detectors.values():
-            det.min_neighbors_for_deadlock = min(det.min_neighbors_for_deadlock, 1)
-            det.detection_interval = 1
+            det.detection_interval = min(det.detection_interval, 1)
             # 放宽碰撞风险半径并扩大视野
             if not hasattr(det, 'collision_risk_distance_threshold'):
-                setattr(det, 'collision_risk_distance_threshold', 2.0)
+                setattr(det, 'collision_risk_distance_threshold', 3.0)
             else:
-                det.collision_risk_distance_threshold = max(1.5, det.collision_risk_distance_threshold)
+                det.collision_risk_distance_threshold = max(3.0, det.collision_risk_distance_threshold)
             det.sight_radius = max(5.0, det.sight_radius)
         
         # 死锁状态
@@ -86,6 +95,10 @@ class post_train:
         # MAPF 管理器 & 环境适配器
         self.mapf_manager = MAPFManager()
         self.env_adapter = SimpleEnvAdapter(self.env)
+        
+        # MAPF执行超时机制
+        self.mapf_timeout_steps = 20  # MAPF最大执行步数（减少超时时间）
+        self.mapf_start_timestep = None  # MAPF开始时间步
 
     def _init_waypoints(self):
         """在每次环境 reset 后，按提供的 waypoint 序列设置初始目标。"""
@@ -175,12 +188,58 @@ class post_train:
         # 更新死锁状态
         if deadlock_agents and not self.deadlock_active:
             self.deadlock_active = True
+            self.mapf_start_timestep = timestep  # 记录MAPF开始时间
             print(f"死锁激活: 时间步{timestep}, 涉及{len(deadlock_agents)}个agent, 死锁组: {deadlock_groups}")
             self._log_deadlock_activation(timestep, deadlock_agents, deadlock_groups)
         elif not deadlock_agents and self.deadlock_active:
             self.deadlock_active = False
+            self.mapf_start_timestep = None  # 重置MAPF开始时间
             print(f"死锁解除: 时间步{timestep}")
             self._log_deadlock_deactivation(timestep)
+        elif deadlock_agents and self.deadlock_active:
+            # 检查MAPF执行超时
+            if (self.mapf_start_timestep is not None and 
+                timestep - self.mapf_start_timestep > self.mapf_timeout_steps):
+                print(f"MAPF执行超时: 时间步{timestep}, 已执行{timestep - self.mapf_start_timestep}步, 超过{self.mapf_timeout_steps}步限制")
+                # 强制取消MAPF会话
+                if hasattr(self, 'mapf_manager'):
+                    try:
+                        self.mapf_manager.cancel_all()
+                        print(f"强制取消MAPF会话")
+                    except Exception as e:
+                        print(f"取消MAPF会话失败: {e}")
+                # 重置死锁状态
+                self.deadlock_active = False
+                self.mapf_start_timestep = None
+                # 清空让行冷却
+                if hasattr(self, '_yield_cooldown'):
+                    self._yield_cooldown = {}
+            # 在死锁解除时立刻结束所有 MAPF 会话并清空让行冷却，避免继续接管
+            if hasattr(self, 'mapf_manager'):
+                try:
+                    self.mapf_manager.cancel_all()
+                except Exception:
+                    pass
+            if hasattr(self, '_yield_cooldown'):
+                self._yield_cooldown = {}
+            # 启动解除后的短时安全护栏：保持 let-yield 策略和限速，避免立刻回切RL导致贴近碰撞
+            self._post_release_guard = 10  # 保护若干步，可按需调参
+            # 保护对象设为解除前参与会话的活跃agent（若无法获取则保护全体）
+            try:
+                if getattr(self, '_last_mapf_group', None):
+                    self._post_release_agents = list(self._last_mapf_group)
+                else:
+                    self._post_release_agents = [aid for aid in range(self.num_agents)]
+            except Exception:
+                self._post_release_agents = [aid for aid in range(self.robot_number)]
+            # 打印解除瞬间各参与agent的位置与速度
+            try:
+                if self.inf_print:
+                    pos = {aid: [self.env.ir_gym.robot_list[aid].state[0,0], self.env.ir_gym.robot_list[aid].state[1,0]] for aid in self._post_release_agents}
+                    vel = {aid: [float(v) for v in self.env.ir_gym.robot_list[aid].vel_omni.reshape(-1)] for aid in self._post_release_agents}
+                    print(f"Post-MAPF release at t={timestep}: positions={pos}, vels={vel}")
+            except Exception:
+                pass
         
         # 记录当前时间步的死锁状态（无论是否激活）
         if deadlock_agents:
@@ -190,14 +249,218 @@ class post_train:
     
     def _log_deadlock_activation(self, timestep, deadlock_agents, deadlock_groups):
         """记录死锁激活信息"""
+        # 获取详细的死锁初始化信息
+        initialization_info = self._get_deadlock_initialization_info(timestep, deadlock_agents, deadlock_groups)
+        
         deadlock_info = {
             'timestep': timestep,
             'type': 'activation',
             'agents': list(deadlock_agents),
             'groups': [list(group) for group in deadlock_groups],
-            'summary': self.deadlock_manager.get_deadlock_summary()
+            'summary': self.deadlock_manager.get_deadlock_summary(),
+            'initialization_info': initialization_info
         }
         self.deadlock_episodes.append(deadlock_info)
+        
+        # 保存详细的初始化信息到文件
+        self._save_deadlock_initialization_log(timestep, deadlock_agents, deadlock_groups, initialization_info)
+
+    def _get_deadlock_initialization_info(self, timestep, deadlock_agents, deadlock_groups):
+        """获取死锁初始化时的详细信息"""
+        try:
+            robot_list = self.env.ir_gym.robot_list
+            
+            initialization_info = {
+                'timestep': timestep,
+                'deadlock_agents': list(deadlock_agents),
+                'deadlock_groups': [list(group) for group in deadlock_groups],
+                'agent_states': {},
+                'detector_info': {},
+                'environment_info': {}
+            }
+            
+            # 收集每个智能体的状态信息
+            for aid in deadlock_agents:
+                if aid < len(robot_list):
+                    robot = robot_list[aid]
+                    
+                    # 基本状态
+                    pos = np.array([robot.state[0, 0], robot.state[1, 0]])
+                    vel = np.array([robot.vel_omni[0, 0], robot.vel_omni[1, 0]])
+                    goal = np.array([robot.goal[0, 0], robot.goal[1, 0]])
+                    
+                    # 计算速度大小
+                    speed = np.linalg.norm(vel)
+                    
+                    # 计算到目标的距离
+                    distance_to_goal = np.linalg.norm(pos - goal)
+                    
+                    # 获取检测器信息
+                    detector = self.deadlock_manager.agent_detectors.get(aid)
+                    detector_info = {}
+                    if detector:
+                        detector_info = {
+                            'trigger_type': detector.deadlock_trigger_type.value if detector.deadlock_trigger_type else None,
+                            'mean_speed': detector.mean_speed,
+                            'neighbor_count': len(detector.neighbors),
+                            'speed_buffer_size': len(detector.speed_buffer),
+                            'satisfied_streak': detector._satisfied_streak
+                        }
+                    
+                    # 获取邻居信息
+                    neighbors_info = []
+                    if detector:
+                        for dist, nei_det in detector.neighbors:
+                            neighbors_info.append({
+                                'neighbor_id': nei_det.agent_id,
+                                'distance': dist,
+                                'neighbor_speed': nei_det.mean_speed
+                            })
+                    
+                    initialization_info['agent_states'][aid] = {
+                        'position': pos.tolist(),
+                        'velocity': vel.tolist(),
+                        'speed': float(speed),
+                        'goal': goal.tolist(),
+                        'distance_to_goal': float(distance_to_goal),
+                        'detector_info': detector_info,
+                        'neighbors': neighbors_info
+                    }
+            
+            # 收集环境信息
+            if hasattr(self.env, 'ir_gym') and hasattr(self.env.ir_gym, 'world'):
+                world = self.env.ir_gym.world
+                initialization_info['environment_info'] = {
+                    'world_size': getattr(world, 'world_size', None),
+                    'obstacle_count': len(getattr(world, 'obs_list', [])),
+                    'robot_count': len(robot_list)
+                }
+            
+            return initialization_info
+            
+        except Exception as e:
+            print(f"Error getting deadlock initialization info: {e}")
+            return {'error': str(e)}
+
+    def _save_deadlock_initialization_log(self, timestep, deadlock_agents, deadlock_groups, initialization_info):
+        """保存死锁初始化详细信息到文件"""
+        try:
+            import os
+            from datetime import datetime
+            
+            # 创建日志目录
+            log_dir = "deadlock_initialization_logs"
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # 生成日志文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f"deadlock_init_t{timestep}_agents{len(deadlock_agents)}_{timestamp}.txt"
+            log_path = os.path.join(log_dir, log_filename)
+            
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write("Deadlock Initialization Log\n")
+                f.write("=" * 50 + "\n\n")
+                
+                # 基本信息
+                f.write(f"Timestep: {timestep}\n")
+                f.write(f"Deadlock Agents: {list(deadlock_agents)}\n")
+                f.write(f"Deadlock Groups: {[list(group) for group in deadlock_groups]}\n")
+                f.write(f"Log Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                
+                # 环境信息
+                f.write("Environment Information:\n")
+                f.write("-" * 25 + "\n")
+                env_info = initialization_info.get('environment_info', {})
+                for key, value in env_info.items():
+                    f.write(f"{key}: {value}\n")
+                f.write("\n")
+                
+                # 智能体详细信息
+                f.write("Agent States Information:\n")
+                f.write("-" * 30 + "\n")
+                agent_states = initialization_info.get('agent_states', {})
+                for aid, state in agent_states.items():
+                    f.write(f"Agent {aid}:\n")
+                    f.write(f"  Position: ({state['position'][0]:.3f}, {state['position'][1]:.3f})\n")
+                    f.write(f"  Velocity: ({state['velocity'][0]:.3f}, {state['velocity'][1]:.3f})\n")
+                    f.write(f"  Speed: {state['speed']:.3f} m/s\n")
+                    f.write(f"  Goal: ({state['goal'][0]:.3f}, {state['goal'][1]:.3f})\n")
+                    f.write(f"  Distance to Goal: {state['distance_to_goal']:.3f} meters\n")
+                    
+                    # 检测器信息
+                    detector_info = state.get('detector_info', {})
+                    f.write(f"  Detector Info:\n")
+                    f.write(f"    Trigger Type: {detector_info.get('trigger_type', 'None')}\n")
+                    f.write(f"    Mean Speed: {detector_info.get('mean_speed', 0):.3f} m/s\n")
+                    f.write(f"    Neighbor Count: {detector_info.get('neighbor_count', 0)}\n")
+                    f.write(f"    Speed Buffer Size: {detector_info.get('speed_buffer_size', 0)}\n")
+                    f.write(f"    Satisfied Streak: {detector_info.get('satisfied_streak', 0)}\n")
+                    
+                    # 邻居信息
+                    neighbors = state.get('neighbors', [])
+                    f.write(f"  Neighbors ({len(neighbors)}):\n")
+                    for nei in neighbors:
+                        f.write(f"    Agent {nei['neighbor_id']}: Distance={nei['distance']:.3f}m, Speed={nei['neighbor_speed']:.3f}m/s\n")
+                    f.write("\n")
+                
+                # 死锁检测配置
+                f.write("Deadlock Detection Configuration:\n")
+                f.write("-" * 35 + "\n")
+                if self.deadlock_manager.agent_detectors:
+                    config = self.deadlock_manager.agent_detectors[0]
+                    f.write(f"Speed Buffer Size: {config.speed_buffer_size}\n")
+                    f.write(f"Small Speed Threshold: {config.small_speed_threshold} m/s\n")
+                    f.write(f"Neighbor Speed Threshold: {config.neighbor_speed_threshold} m/s\n")
+                    f.write(f"Min Neighbors for Deadlock: {config.min_neighbors_for_deadlock}\n")
+                    f.write(f"Sight Radius: {config.sight_radius} meters\n")
+                    f.write(f"Detection Interval: {config.detection_interval} timesteps\n")
+                    f.write(f"Activation Hysteresis Steps: {config.activation_hysteresis_steps}\n")
+                    f.write(f"Collision Risk Distance Threshold: {config.collision_risk_distance_threshold} meters\n")
+                f.write("\n")
+                
+                # Waypoint信息
+                f.write("Waypoint Information:\n")
+                f.write("-" * 20 + "\n")
+                if hasattr(self, 'waypoint_sequences'):
+                    for aid in deadlock_agents:
+                        if aid in self.waypoint_sequences:
+                            waypoints = self.waypoint_sequences[aid]
+                            f.write(f"Agent {aid} Waypoints: {[f'({wp[0]:.3f}, {wp[1]:.3f})' for wp in waypoints]}\n")
+                        else:
+                            f.write(f"Agent {aid}: No waypoint sequence\n")
+                f.write("\n")
+                
+                # 触发条件分析
+                f.write("Trigger Condition Analysis:\n")
+                f.write("-" * 30 + "\n")
+                for aid in deadlock_agents:
+                    if aid in agent_states:
+                        state = agent_states[aid]
+                        detector_info = state.get('detector_info', {})
+                        trigger_type = detector_info.get('trigger_type', 'Unknown')
+                        mean_speed = detector_info.get('mean_speed', 0)
+                        neighbor_count = detector_info.get('neighbor_count', 0)
+                        
+                        f.write(f"Agent {aid}:\n")
+                        f.write(f"  Trigger Type: {trigger_type}\n")
+                        f.write(f"  Mean Speed: {mean_speed:.3f} m/s")
+                        if mean_speed < 0.1:
+                            f.write(" (Below threshold)")
+                        f.write("\n")
+                        f.write(f"  Neighbor Count: {neighbor_count}")
+                        if neighbor_count >= 2:
+                            f.write(" (Sufficient for deadlock)")
+                        f.write("\n")
+                        f.write(f"  Current Speed: {state['speed']:.3f} m/s")
+                        if state['speed'] < 0.1:
+                            f.write(" (Low speed)")
+                        f.write("\n")
+                f.write("\n")
+                
+            print(f"[Deadlock] Initialization log saved to: {log_path}")
+            
+        except Exception as e:
+            print(f"[Deadlock] Failed to save initialization log: {e}")
     
     def _log_timestep_deadlock(self, timestep, deadlock_agents, deadlock_groups):
         """记录时间步死锁信息"""
@@ -633,14 +896,49 @@ class post_train:
                     abs_action = self.acceler_vel * a_inc + np.squeeze(cur_vel)
                     abs_action_list.append(abs_action)
 
-            o, r, d, info = self.env.step_ir(abs_action_list, vel_type = 'omni')
-
-            # 推进 waypoint（若提供）
-            self._update_waypoints()
-
-            # 更新死锁检测
+            # 更新死锁检测（在执行控制前，便于本步覆盖动作）
             deadlock_detected, deadlock_agents, deadlock_groups = \
                 self.update_deadlock_detection(ep_len)
+
+            # 保护：若当前不在死锁状态，但仍存在活跃会话，立即清理，防止解除后继续接管
+            if not deadlock_detected:
+                try:
+                    if any(self.mapf_manager.is_active(aid) for aid in range(self.robot_number)):
+                        self.mapf_manager.cancel_all()
+                        if hasattr(self, '_yield_cooldown'):
+                            self._yield_cooldown = {}
+                except Exception:
+                    pass
+                # 解除后安全护栏的“安全清零”判据：若连续M步满足VO全False且最近间距>1.0m，则提前结束护栏
+                if getattr(self, '_post_release_guard', 0) > 0:
+                    try:
+                        # 计算受保护对之间的最小间距与VO状态
+                        positions = {aid: np.array([r.state[0, 0], r.state[1, 0]], dtype=float) for aid, r in enumerate(self.env.ir_gym.robot_list)}
+                        min_sep = float('inf')
+                        all_vo_false = True
+                        guard_agents = set(getattr(self, '_post_release_agents', []))
+                        protected = [aid for aid in range(self.robot_number) if (aid in guard_agents)]
+                        # 获取当前VO Flags（已由上游记录），保底为False
+                        current_vo_flags = []
+                        if hasattr(self, 'current_vo_flag_history') and self.current_vo_flag_history:
+                            current_vo_flags = self.current_vo_flag_history[-1].get('vo_flags', [])
+                        for i in range(len(protected)):
+                            for j in range(i+1, len(protected)):
+                                ai, aj = protected[i], protected[j]
+                                min_sep = min(min_sep, float(np.linalg.norm(positions[ai] - positions[aj])))
+                        # 判定VO：若有缺失则保守认为存在约束
+                        if current_vo_flags:
+                            all_vo_false = all(flag == False for flag in current_vo_flags[:self.robot_number])
+                        else:
+                            all_vo_false = False
+                        if all_vo_false and min_sep > 1.2:
+                            self._post_release_safe_streak += 1
+                            if self._post_release_safe_streak >= 2:
+                                self._post_release_guard = 0
+                        else:
+                            self._post_release_safe_streak = 0
+                    except Exception:
+                        pass
 
             # 如果检测到死锁，尝试启动 MAPF 会话
             if deadlock_detected and deadlock_groups:
@@ -654,28 +952,152 @@ class post_train:
 
                 # waypoints：复用构造时传入的序列
                 waypoints_dict = self.waypoint_sequences if self.waypoint_sequences else {aid: [goals[aid]] for aid in positions.keys()}
-
-                self.mapf_manager.try_start(deadlock_groups, agent_states, self.env_adapter, waypoints_dict, ep_len)
+                started_sessions = self.mapf_manager.try_start(deadlock_groups, agent_states, self.env_adapter, waypoints_dict, ep_len)
+                if self.inf_print and started_sessions:
+                    print(f"MAPF started at t={ep_len}, sessions={started_sessions}, groups={deadlock_groups}")
+                # 记录最近一次会话涉及的 agent 集合
+                if started_sessions and deadlock_groups:
+                    try:
+                        merged = set()
+                        for g in deadlock_groups:
+                            merged.update(g)
+                        self._last_mapf_group = set(merged)
+                    except Exception:
+                        self._last_mapf_group = set()
+                # 强制首帧优先级让行：同组内除最小ID外的agent先让行一拍，避免相互抢占
+                if started_sessions:
+                    if not hasattr(self, '_yield_cooldown'):
+                        self._yield_cooldown = {}
+                    for group in deadlock_groups:
+                        if not group:
+                            continue
+                        lo_id = min(group)
+                        for aid in group:
+                            if aid != lo_id:
+                                self._yield_cooldown[aid] = max(2, self._yield_cooldown.get(aid, 0))
 
             # 若 MAPF 活跃，则推进执行并覆盖动作目标
             active_any = any(self.mapf_manager.is_active(aid) for aid in range(self.robot_number))
-            if active_any:
+            # 仅在死锁仍然处于激活状态时才允许接管与覆盖
+            if active_any and self.deadlock_active:
+                if self.inf_print:
+                    active_agents = [aid for aid in range(self.robot_number) if self.mapf_manager.is_active(aid)]
+                    print(f"MAPF active at t={ep_len}, agents={active_agents}")
                 cur_positions = {aid: np.array([r.state[0, 0], r.state[1, 0]], dtype=float) for aid, r in enumerate(self.env.ir_gym.robot_list)}
                 # 使用底层 ir_gym 的步长
                 self.mapf_manager.step_execute(cur_positions, self.env.ir_gym.step_time)
+                # 碰撞护栏：基于优先级（ID升序）让行，低ID优先
+                active_agents = [aid for aid in range(self.robot_number) if self.mapf_manager.is_active(aid)]
+                yield_agents = set()
+                yield_reason = {}
+
+                # 预取各 agent 的下一目标
+                next_targets = {aid: self.mapf_manager.next_target(aid) for aid in active_agents}
+                # 应用冷却：仍在冷却期的直接让行
+                for aid in active_agents:
+                    remain = getattr(self, '_yield_cooldown', {}).get(aid, 0)
+                    if remain > 0:
+                        yield_agents.add(aid)
+                        yield_reason[aid] = 'cooldown'
+                        self._yield_cooldown[aid] = remain - 1
+
+                # 规则：在近距离或对向冲突下，较大ID一律让行（优先级让行）
+                for ai in active_agents:
+                    for aj in active_agents:
+                        if ai == aj:
+                            continue
+                        pi, pj = cur_positions[ai], cur_positions[aj]
+                        sep = float(np.linalg.norm(pi - pj))
+                        # 条件1：距离过近（放宽到1.5m）
+                        near_conflict = sep < 1.5
+                        # 条件2：对向冲突（方向几乎相反且较近）
+                        ti, tj = next_targets.get(ai), next_targets.get(aj)
+                        head_on = False
+                        if ti is not None and tj is not None:
+                            vi = ti - pi
+                            vj = tj - pj
+                            nvi = vi / np.linalg.norm(vi) if np.linalg.norm(vi) > 1e-6 else vi
+                            nvj = vj / np.linalg.norm(vj) if np.linalg.norm(vj) > 1e-6 else vj
+                            head_on = (sep < 1.5 and float(np.dot(nvi, nvj)) < -0.1)
+                        if near_conflict or head_on:
+                            # 较大ID让行
+                            if aj < ai and ai not in yield_agents:
+                                yield_agents.add(ai)
+                                yield_reason[ai] = 'distance' if near_conflict else 'head-on'
+                                # 设置冷却，避免下一帧立刻夺回
+                                if not hasattr(self, '_yield_cooldown'):
+                                    self._yield_cooldown = {}
+                                self._yield_cooldown[ai] = max(2, self._yield_cooldown.get(ai, 0))
+                # 选出当前活跃集合中的最低ID，赋予优先通行权（避免双方都停导致超时）
+                min_active_id = min(active_agents) if active_agents else None
                 # 将处于 MAPF 的 agent 的动作替换为朝向下一个目标点的简单跟踪（覆盖 abs_action_list）
                 for aid in range(self.robot_number):
                     if self.mapf_manager.is_active(aid):
-                        target = self.mapf_manager.next_target(aid)
+                        target = next_targets.get(aid)
                         if target is not None:
                             pos = cur_positions[aid]
                             vec = target - pos
-                            if np.linalg.norm(vec) > 1e-6:
-                                vec = vec / np.linalg.norm(vec)
-                            # 简单将速度幅值限制为当前加速度系数
-                            abs_action_list[aid] = vec * self.acceler_vel
+                            dist = float(np.linalg.norm(vec))
+                            if dist > 1e-6:
+                                vec = vec / dist
+                            # 近目标/让行逻辑
+                            if aid in yield_agents:
+                                # 被判为让行：完全停下
+                                abs_action_list[aid] = np.array([0.0, 0.0], dtype=float)
+                                if self.inf_print:
+                                    reason = yield_reason.get(aid, 'priority')
+                                    print(f"  override action for agent {aid} yield ({reason})")
+                            elif dist < 0.25:
+                                # 近目标：最低ID优先以低速通过，避免双停超时
+                                if min_active_id is not None and aid == min_active_id:
+                                    abs_action_list[aid] = vec * 0.3
+                                    if self.inf_print:
+                                        print(f"  override action for agent {aid} pass (near target)")
+                                else:
+                                    abs_action_list[aid] = np.array([0.0, 0.0], dtype=float)
+                                    if self.inf_print:
+                                        print(f"  override action for agent {aid} stop (near target)")
+                            else:
+                                # 限制接管时速度幅值，避免过激（上限 0.6）
+                                abs_action_list[aid] = vec * min(self.acceler_vel, 0.6)
+                                if self.inf_print:
+                                    print(f"  override action for agent {aid} towards {target.tolist()}")
 
-            # 记录当前timestep的详细信息
+            # 若处于解除后的安全护栏期，对高风险相邻对施加轻量让行与限速（不依赖会话）
+            if getattr(self, '_post_release_guard', 0) > 0:
+                try:
+                    # 仅对受保护agent应用
+                    guard_agents = set(getattr(self, '_post_release_agents', []))
+                    # 近距离/对向冲突避让（与MAPF接管期一致但更保守）
+                    positions = {aid: np.array([r.state[0, 0], r.state[1, 0]], dtype=float) for aid, r in enumerate(self.env.ir_gym.robot_list)}
+                    protected = [aid for aid in range(self.robot_number) if (aid in guard_agents)]
+                    for ai in protected:
+                        for aj in protected:
+                            if ai >= aj:
+                                continue
+                            pi, pj = positions[ai], positions[aj]
+                            sep = float(np.linalg.norm(pi - pj))
+                            if sep < 0.8:
+                                # 高ID让行（速度置零），低ID限速
+                                hi, lo = (ai, aj) if ai > aj else (aj, ai)
+                                abs_action_list[hi] = np.array([0.0, 0.0], dtype=float)
+                                # 低ID将动作幅值限制到0.5
+                                v = abs_action_list[lo]
+                                norm = float(np.linalg.norm(v))
+                                if norm > 1e-6:
+                                    abs_action_list[lo] = v / norm * min(self.acceler_vel, 0.5)
+                    # 递减剩余保护步数
+                    self._post_release_guard -= 1
+                except Exception:
+                    pass
+
+            # 执行动作（已考虑接管覆盖与解除后护栏）
+            o, r, d, info = self.env.step_ir(abs_action_list, vel_type = 'omni')
+
+            # 推进 waypoint（若提供）
+            self._update_waypoints()
+
+            # 记录当前timestep的详细信息（记录实际下发的动作）
             self.record_timestep_info(ep_len, o, abs_action_list, r, d, info)
 
             robot_speed_list = [np.linalg.norm(robot.vel_omni) for robot in self.env.ir_gym.robot_list]
@@ -717,6 +1139,8 @@ class post_train:
                 mean_speed_list.append(speed)
                 speed_list = []
 
+                # 清理所有MAPF会话，避免跨episode残留
+                self.mapf_manager.cancel_all()
                 o, r, d, ep_ret, ep_len = self.env.reset(mode=self.reset_mode), 0, False, 0, 0
                 # 重置后恢复到第一段 waypoint（若提供）
                 self._init_waypoints()
@@ -727,6 +1151,8 @@ class post_train:
                 # 重置VO Flag历史记录
                 if hasattr(self, 'current_vo_flag_history'):
                     self.current_vo_flag_history = []
+                # 重置让行冷却
+                self._yield_cooldown = {}
                 # 保存当前episode的死锁信息
                 if self.current_episode_deadlock_events:
                     episode_deadlock_info = {

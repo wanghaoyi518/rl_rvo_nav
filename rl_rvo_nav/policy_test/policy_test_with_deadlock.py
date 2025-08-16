@@ -29,7 +29,7 @@ def print_usage_info():
     print("  --enable_deadlock_detection    启用死锁检测 (默认启用)")
     print("  --deadlock_distance_threshold  距离阈值 (默认3.0)")
     print("  --deadlock_speed_threshold     速度阈值 (默认0.1)")
-    print("  --min_agents_for_deadlock     最小agent数 (默认3)")
+    print("  --min_agents_for_deadlock     最小agent数 (默认2)")
     print("  --deadlock_config             配置文件路径")
     print("")
     print("其他参数与原始policy_test.py相同")
@@ -54,7 +54,7 @@ parser.add_argument('--arg_name', default='r2_2/r2_2')  # 匹配模型的参数�
 parser.add_argument('--world_name', default='policy_test_world_corridor.yaml')  # corridor 定制
 parser.add_argument('--render', action='store_true', default=False)
 parser.add_argument('--robot_number', type=int, default='2')  # 匹配预训练模型的机器人数量
-parser.add_argument('--num_episodes', type=int, default='3')
+parser.add_argument('--num_episodes', type=int, default='2')
 parser.add_argument('--dis_mode', type=int, default='0')  # 0 custom for corridor
 parser.add_argument('--save', action='store_true', default=False)
 parser.add_argument('--full', action='store_true')
@@ -67,11 +67,11 @@ parser.add_argument('--seed', type=int, default=42, help='random seed for reprod
 parser.add_argument('--deadlock_config', default='deadlock_config.yaml', help='deadlock detection config file')
 parser.add_argument('--enable_deadlock_detection', action='store_true', default=True, help='enable deadlock detection')
 parser.add_argument('--deadlock_speed_buffer_size', type=int, default=20, help='speed buffer size for deadlock detection')
-parser.add_argument('--deadlock_speed_threshold', type=float, default=0.1, help='speed threshold for deadlock detection')
-parser.add_argument('--deadlock_neighbor_speed_threshold', type=float, default=0.1, help='neighbor speed threshold for deadlock detection')
-parser.add_argument('--min_agents_for_deadlock', type=int, default=2, help='minimum number of neighbors for deadlock detection')
-parser.add_argument('--deadlock_distance_threshold', type=float, default=3.0, help='sight radius for deadlock detection')
-parser.add_argument('--deadlock_detection_interval', type=int, default=5, help='detection interval for deadlock detection')
+parser.add_argument('--deadlock_speed_threshold', type=float, default=0.05, help='speed threshold for deadlock detection')
+parser.add_argument('--deadlock_neighbor_speed_threshold', type=float, default=0.05, help='neighbor speed threshold for deadlock detection')
+parser.add_argument('--min_agents_for_deadlock', type=int, default=1, help='minimum number of neighbors for deadlock detection')
+parser.add_argument('--deadlock_distance_threshold', type=float, default=2.0, help='sight radius for deadlock detection')
+parser.add_argument('--deadlock_detection_interval', type=int, default=10, help='detection interval for deadlock detection')
 
 policy_args = parser.parse_args()
 
@@ -127,7 +127,9 @@ if policy_args.enable_deadlock_detection:
     possible_config_paths = [
         cur_path / policy_args.deadlock_config,
         Path(policy_args.deadlock_config),
-        Path(__file__).parent.parent / policy_args.deadlock_config
+        Path(__file__).parent.parent / policy_args.deadlock_config,
+        Path(__file__).parent.parent.parent / policy_args.deadlock_config,  # 添加项目根目录
+        Path.cwd() / policy_args.deadlock_config  # 添加当前工作目录
     ]
     
     config_path = None

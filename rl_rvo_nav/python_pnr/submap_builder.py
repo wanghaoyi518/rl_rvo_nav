@@ -26,6 +26,60 @@ class SubMapBuilder:
         min_y, max_y = min(ys) - margin_m, max(ys) + margin_m
         return (min_x, min_y), (max_x, max_y)
 
+    def compute_bbox_with_integer_dimensions(self, positions_world: List[np.ndarray], margin_m: float = 0.0, resolution: float = 1.0) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """
+        计算整数尺寸的BBox，确保宽度和高度是分辨率的整数倍
+        
+        Args:
+            positions_world: 智能体位置列表
+            margin_m: 边距（米）
+            resolution: 网格分辨率（米/格子）
+            
+        Returns:
+            ((min_x, min_y), (max_x, max_y)): 整数尺寸的BBox
+        """
+        xs = [float(p[0]) for p in positions_world]
+        ys = [float(p[1]) for p in positions_world]
+        
+        # 计算基础BBox
+        min_x, max_x = min(xs) - margin_m, max(xs) + margin_m
+        min_y, max_y = min(ys) - margin_m, max(ys) + margin_m
+        
+        # 计算当前尺寸
+        current_width = max_x - min_x
+        current_height = max_y - min_y
+        
+        # 计算目标整数格子数（向上取整，确保覆盖所有智能体）
+        target_width_cells = int(np.ceil(current_width / resolution))
+        target_height_cells = int(np.ceil(current_height / resolution))
+        
+        # 计算整数尺寸
+        target_width = target_width_cells * resolution
+        target_height = target_height_cells * resolution
+        
+        # 计算中心点
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+        
+        # 从中心点扩展，确保整数尺寸
+        half_width = target_width / 2
+        half_height = target_height / 2
+        
+        # 确保最小尺寸（至少3x3格子）
+        min_cells = 3
+        if target_width_cells < min_cells:
+            half_width = (min_cells * resolution) / 2
+        if target_height_cells < min_cells:
+            half_height = (min_cells * resolution) / 2
+        
+        # 计算最终的BBox
+        final_min_x = center_x - half_width
+        final_max_x = center_x + half_width
+        final_min_y = center_y - half_height
+        final_max_y = center_y + half_height
+        
+        return (final_min_x, final_min_y), (final_max_x, final_max_y)
+
     def build_submap(self, bbox_world: Tuple[Tuple[float, float], Tuple[float, float]], pad_cells: int = 1):
         grid, origin_ij, resolution = self.env.crop_subgrid(bbox_world, pad_cells)
         return grid, origin_ij, resolution
