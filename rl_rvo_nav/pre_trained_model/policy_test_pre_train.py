@@ -3,7 +3,7 @@ import gym_env
 from pathlib import Path
 import pickle
 import sys
-from rl_rvo_nav.policy_test.post_train import post_train
+from rl_rvo_nav.policy_test.post_train_with_deadlock import post_train
 import argparse
 
 parser = argparse.ArgumentParser(description='policy test')

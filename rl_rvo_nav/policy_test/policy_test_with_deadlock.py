@@ -3,7 +3,7 @@ import gym_env
 from pathlib import Path
 import pickle
 import sys
-from rl_rvo_nav.policy_test.post_train import post_train
+from rl_rvo_nav.policy_test.post_train_with_deadlock import post_train
 import argparse
 import os
 from os.path import dirname, abspath
@@ -48,18 +48,17 @@ os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 parser = argparse.ArgumentParser(description='policy test with deadlock detection')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='r2_2/r2_2_150.pt')  # 使用您当前的模型
-# parser.add_argument('--model_name', default='r4_0/r4_0_check_point_250.pt')  with check point --> policy_dict=True
-parser.add_argument('--arg_name', default='r2_2/r2_2')  # 匹配模型的参数文件
-parser.add_argument('--world_name', default='policy_test_world_corridor.yaml')  # corridor 定制
+parser.add_argument('--model_name', default='r2_4/r2_4_check_point_150.pt')  # 使用最佳性能模型
+parser.add_argument('--arg_name', default='r2_4/r2_4')  # 匹配模型的参数文件
+parser.add_argument('--world_name', default='train_world_with_obstacles.yaml')  # 使用训练环境配置
 parser.add_argument('--render', action='store_true', default=False)
 parser.add_argument('--robot_number', type=int, default='2')  # 匹配预训练模型的机器人数量
-parser.add_argument('--num_episodes', type=int, default='2')
-parser.add_argument('--dis_mode', type=int, default='0')  # 0 custom for corridor
+parser.add_argument('--num_episodes', type=int, default='10')
+parser.add_argument('--dis_mode', type=int, default='1')  # 1 random - 随机生成起始点和目标点
 parser.add_argument('--save', action='store_true', default=False)
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
-parser.add_argument('--policy_dict', action='store_true')
+parser.add_argument('--policy_dict', action='store_true', default=True)
 parser.add_argument('--once', action='store_true')
 parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
 
@@ -112,11 +111,8 @@ if policy_args.policy_type == 'drl':
     
 env = gym.make('mrnav-v1', world_name=policy_args.world_name, robot_number=policy_args.robot_number, neighbors_region=args.neighbors_region, neighbors_num=args.neighbors_num, robot_init_mode=policy_args.dis_mode, env_train=False, random_bear=args.random_bear, random_radius=args.random_radius, reward_parameter=args.reward_parameter, goal_threshold=0.2, full=policy_args.full, seed=policy_args.seed)
 
-# 定义每个agent的全局waypoint序列（连续坐标，仅x,y）
-waypoint_sequences = {
-    0: [np.array([0.0, 0.0]), np.array([6.0, 5.0]), np.array([10.0, 10.0])],
-    1: [np.array([10.0, 0.0]), np.array([4.0, 5.0]), np.array([0.0, 10.0])],
-}
+# 对于随机生成的环境，waypoint序列为空，直接从起始点导航到目标点
+waypoint_sequences = {}
 
 policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode)
 

@@ -23,7 +23,7 @@ class AgentDeadlockDetector:
                   min_neighbors_for_deadlock: int = 2,
                  sight_radius: float = 3.0,
                    detection_interval: int = 5,
-                   collision_risk_distance_threshold: float = 3.0,
+                   collision_risk_distance_threshold: float = 4.0,
                    activation_hysteresis_steps: int = 3):
         """
         初始化单个agent的死锁检测器

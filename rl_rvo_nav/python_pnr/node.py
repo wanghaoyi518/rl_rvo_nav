@@ -28,6 +28,11 @@ class Node:
         self.i = i  # row
         self.j = j  # col
         self.traversable = traversable
+        # A*算法相关属性
+        self.g = 0.0  # 从起始点到当前节点的实际代价
+        self.H = 0.0  # 从当前节点到目标点的启发式距离
+        self.F = 0.0  # 总评估值 F = g + H
+        self.parent = None  # 父节点，用于路径回溯
 
     def __eq__(self, other):
         if other is None:
