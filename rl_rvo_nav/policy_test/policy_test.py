@@ -24,11 +24,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 parser = argparse.ArgumentParser(description='policy test')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='r2_4/r2_4_check_point_150.pt')  # 使用最佳性能模型
-parser.add_argument('--arg_name', default='r2_4/r2_4')  # 匹配模型的参数文件
+parser.add_argument('--model_name', default='r6_0/r6_0_check_point_1000.pt')  # 使用最佳性能模型
+parser.add_argument('--arg_name', default='r6_0/r6_0')  # 匹配模型的参数文件
 parser.add_argument('--world_name', default='train_world_with_obstacles.yaml')  # 使用训练环境配置
 parser.add_argument('--render', action='store_true', default=False)
-parser.add_argument('--robot_number', type=int, default='2')  # 匹配预训练模型的机器人数量
+parser.add_argument('--robot_number', type=int, default='6')  # 匹配预训练模型的机器人数量
 parser.add_argument('--num_episodes', type=int, default='100')
 parser.add_argument('--dis_mode', type=int, default='1')  # 1 random - 随机生成起始点和目标点
 parser.add_argument('--save', action='store_true', default=False)
