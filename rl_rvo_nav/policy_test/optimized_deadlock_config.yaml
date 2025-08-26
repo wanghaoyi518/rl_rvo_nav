@@ -1,0 +1,41 @@
+# 优化的死锁检测配置文件 - 针对障碍物环境
+
+# 速度缓冲区参数
+speed_buffer_size: 15            # 减少缓冲区大小，提高响应速度
+small_speed_threshold: 0.05      # 降低低速阈值，更敏感
+neighbor_speed_threshold: 0.05   # 降低邻居低速阈值
+
+# 邻居检测参数
+min_neighbors_for_deadlock: 1    # 降低最小邻居数，更容易触发
+sight_radius: 6.0                # 扩大视野半径
+
+# 检测控制参数
+detection_interval: 1            # 每步都检测
+activation_hysteresis_steps: 3   # 减少激活延迟，从10步降到3步
+
+# 触发类型配置
+enable_speed_buffer_trigger: true
+enable_common_point_trigger: true
+enable_collision_risk_trigger: true
+
+# 碰撞风险参数
+collision_risk_distance_threshold: 3.0    # 降低碰撞风险距离阈值
+
+# 日志参数
+enable_deadlock_logging: true
+log_detailed_info: true
+
+# 调试参数
+debug_mode: false
+verbose_output: true
+
+# MAPF执行参数
+mapf_timeout_steps: 100          # 增加MAPF超时步数
+max_goal_search_radius: 5        # 增加目标搜索半径
+max_reasonable_distance: 15.0    # 增加最大合理距离
+
+# 新增：RL协调参数
+rl_coordination_enabled: true    # 启用RL协调
+mapf_priority_weight: 0.8        # MAPF路径优先级权重
+rl_fallback_weight: 0.2          # RL策略回退权重
+safety_distance_threshold: 2.0   # 安全距离阈值

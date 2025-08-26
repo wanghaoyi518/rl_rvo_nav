@@ -1,0 +1,34 @@
+world:
+  world_height: 10
+  world_width: 10
+  step_time: 0.1
+
+robots:
+  robot_number: 2
+  robot_mode: 'diff'  # omni or diff
+  robot_init_mode: 1  # 1 for random initialization
+  radius_list: [0.2, 0.2]  # first one is the default radius under other init_mode
+  vel_max: [1.5, 1.5]
+  radius_exp: 0.1
+  interval: 1 
+  square: [0, 0, 10, 10]
+  circular: [5, 5, 4]
+
+# Static obstacles for training
+obs_polygons:
+  number: 2
+  vertexes_list:
+    - [ [2, 2], [4, 2], [4, 4], [2, 4] ]  # Bottom-left obstacle
+    - [ [6, 6], [8, 6], [8, 8], [6, 8] ]  # Top-right obstacle
+
+obs_lines:
+  number: 8
+  obs_line_states:
+    - [2, 2, 4, 2]  # Bottom edge of obstacle 1
+    - [4, 2, 4, 4]  # Right edge of obstacle 1
+    - [4, 4, 2, 4]  # Top edge of obstacle 1
+    - [2, 4, 2, 2]  # Left edge of obstacle 1
+    - [6, 6, 8, 6]  # Bottom edge of obstacle 2
+    - [8, 6, 8, 8]  # Right edge of obstacle 2
+    - [8, 8, 6, 8]  # Top edge of obstacle 2
+    - [6, 8, 6, 6]  # Left edge of obstacle 2
