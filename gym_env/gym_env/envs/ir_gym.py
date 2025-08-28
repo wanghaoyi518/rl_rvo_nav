@@ -31,6 +31,10 @@ class ir_gym(env_base):
 
         self.rvo_state_dim = 8
         self.safe_distance_state_dim = 6
+        
+        # Curriculum learning parameters for random obstacles
+        self.curriculum_level = kwargs.get('curriculum_level', 0)
+        self.obs_curriculum_enable = kwargs.get('obs_curriculum_enable', False)
 
     def cal_des_omni_list(self):
         des_vel_list = [robot.cal_des_vel_omni() for robot in self.robot_list]
@@ -192,12 +196,34 @@ class ir_gym(env_base):
         return observation
 
     def env_reset(self, reset_mode=1, **kwargs):
+        # Call parent class reset to handle random obstacles regeneration
+        super(ir_gym, self).reset(**kwargs)
         
         self.components['robots'].robots_reset(reset_mode, **kwargs)
         ts = self.components['robots'].total_states()
         obs_list = list(map(lambda robot: self.observation(robot, ts[1], ts[2], ts[3]), self.robot_list))
 
         return obs_list
+    
+    def update_curriculum_level(self, new_level):
+        """Update curriculum learning level for dynamic obstacle complexity adjustment."""
+        self.curriculum_level = new_level
+        if hasattr(self, 'components') and 'obs_random' in self.components and self.components['obs_random'] is not None:
+            # Update obstacle complexity based on curriculum level
+            # This can be used to dynamically adjust obstacle generation parameters
+            pass
+    
+    def get_obstacle_info(self):
+        """Get current obstacle information for curriculum learning monitoring."""
+        if hasattr(self, 'components') and 'obs_random' in self.components:
+            random_info = self.get_random_obstacles_info()
+            total_static_obstacles = len(self.obs_cir_list) + len(self.obs_poly_list) + len(self.obs_line_states)
+            return {
+                'random_obstacles': random_info,
+                'total_static_obstacles': total_static_obstacles,
+                'curriculum_level': self.curriculum_level
+            }
+        return None
 
     def env_reset_one(self, id):
         self.robot_reset(id)
