@@ -13,14 +13,14 @@ os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 parser = argparse.ArgumentParser(description='policy test')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='r4_0/r4_0_250.pt')  #   policy_dict=False    
+parser.add_argument('--model_name', default='r4_6/r4_6_100.pt')  #   policy_dict=False    
 # parser.add_argument('--model_name', default='r4_0/r4_0_check_point_250.pt')  with check point --> policy_dict=True
-parser.add_argument('--arg_name', default='r4_0/r4_0')
+parser.add_argument('--arg_name', default='r4_6/r4_6')
 parser.add_argument('--world_name', default='policy_test_world.yaml')  # policy_test_world_lines.yaml
 parser.add_argument('--render', action='store_true')
 parser.add_argument('--robot_number', type=int, default='4')
 parser.add_argument('--num_episodes', type=int, default='100')
-parser.add_argument('--dis_mode', type=int, default='3')  # 3 circle, 2 random, 5 for corridor
+parser.add_argument('--dis_mode', type=int, default='2')  # 3 circle, 2 random, 5 for corridor
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')

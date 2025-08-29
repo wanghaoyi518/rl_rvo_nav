@@ -26,12 +26,12 @@ par_env = parser.add_argument_group('par env', 'environment parameters')
 par_env.add_argument('--env_name', default='mrnav-v1')
 par_env.add_argument('--world_path', default='train_world.yaml') # dynamic_obs_test.yaml; train_world.yaml
 par_env.add_argument('--robot_number', type=int, default=4)
-par_env.add_argument('--init_mode', default=3)
-par_env.add_argument('--reset_mode', default=3)
+par_env.add_argument('--init_mode', default=6)
+par_env.add_argument('--reset_mode', default=6)
 par_env.add_argument('--mpi', default=False)
 
 par_env.add_argument('--neighbors_region', default=4)
-par_env.add_argument('--neighbors_num', type=int, default=5)   
+par_env.add_argument('--neighbors_num', type=int, default=20)   
 par_env.add_argument('--reward_parameter', type=float, default=(3.0, 0.3, 0.0, 6.0, 0.3, 3.0, -0, 0), nargs='+')
 par_env.add_argument('--env_train', default=True)
 par_env.add_argument('--random_bear', default=True)
@@ -82,7 +82,7 @@ par_train.add_argument('--save_result', type=bool, default=True)
 par_train.add_argument('--lr_decay_epoch', type=int, default=1000)
 par_train.add_argument('--max_update_num', type=int, default=10)
 
-args = parser.parse_args(['--train_epoch', '250', '--use_gpu'])
+args = parser.parse_args(['--train_epoch', '200', '--use_gpu'])
 
 # decide the model path and model name 
 model_path_check = args.save_path + args.save_name + str(args.robot_number) + '_{}'
