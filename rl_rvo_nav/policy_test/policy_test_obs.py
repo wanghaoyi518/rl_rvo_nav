@@ -7,25 +7,41 @@ from rl_rvo_nav.policy_test.post_train import post_train
 import argparse
 import os
 from os.path import dirname, abspath
+import numpy as np
+import random
+import torch
 
 os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
 
-parser = argparse.ArgumentParser(description='policy test')
+# 设置固定随机种子
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+parser = argparse.ArgumentParser(description='policy test for Stage 4 best model')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-# parser.add_argument('--model_name', default='r4_6/r4_6_100.pt')  #   policy_dict=False    
-parser.add_argument('--model_name', default='r4_1/r4_1_check_point_150.pt')  #with check point --> policy_dict=True
-parser.add_argument('--arg_name', default='r4_1/r4_1')
-parser.add_argument('--world_name', default='policy_test_world.yaml')  # policy_test_world_lines.yaml
+# Stage 4 最佳模型: r4_mode7_stage3_10_0_300 (成功率55%)
+parser.add_argument('--model_name', default='r4_mode7_stage3_10_0/r4_mode7_stage3_10_0_300.pt')  #   policy_dict=True    
+parser.add_argument('--arg_name', default='r4_mode7_stage3_10_0/r4_mode7_stage3_10_0')
+# Stage 4 配置文件
+parser.add_argument('--world_name', default='mode7_stage4_complex+.yaml')  # Stage 4配置文件
 parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='4')
-parser.add_argument('--num_episodes', type=int, default='100')
-parser.add_argument('--dis_mode', type=int, default='2')  # 3 circle, 2 random, 5 for corridor
+# Stage 4 使用10个机器人
+parser.add_argument('--robot_number', type=int, default='10')
+parser.add_argument('--num_episodes', type=int, default='10')
+# Mode 7: random with distance constraint + random polygons
+parser.add_argument('--dis_mode', type=int, default='7')  # 7 for Mode 7
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
-# parser.add_argument('--policy_dict', action='store_true')
-parser.add_argument('--policy_dict', action='store_true', default=True)
+# 不使用checkpoint格式，直接加载模型
+parser.add_argument('--policy_dict', action='store_true', default=False)
 parser.add_argument('--once', action='store_true')
 
 policy_args = parser.parse_args()

@@ -1,0 +1,18 @@
+"""
+Deadlock Resolution Module
+
+This module provides deadlock detection and resolution functionality
+for RL_RVO navigation system using Push and Rotate (PAR) algorithm.
+"""
+
+from .deadlock_detector import DeadlockDetector
+from .par_coordinator import PARCoordinator
+from .par_executor import PARExecutor
+from .par_environment import PAREnvironment
+
+__all__ = [
+    'DeadlockDetector',
+    'PARCoordinator', 
+    'PARExecutor',
+    'PAREnvironment'
+]

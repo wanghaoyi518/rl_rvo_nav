@@ -246,3 +246,36 @@ class rvo_inter(reciprocal_vel_obs):
         angle = atan2( relative[1], relative[0] )
 
         return distance, angle
+    
+    # Mode-related methods for deadlock resolution
+    def get_agent_mode(self, agent_id):
+        """Get current mode of an agent."""
+        # This method should be called from the environment
+        # For now, return default mode
+        return 'rl_rvo'
+    
+    def should_use_rl_control(self, agent_id):
+        """Check if RL control should be used for the agent."""
+        # This method should be called from the environment
+        # For now, return True (use RL control)
+        return True
+    
+    def compute_par_velocity(self, agent_id, target_position, neighbors):
+        """Compute velocity for PAR mode using RVO navigation."""
+        # This is a placeholder implementation
+        # In a real implementation, this would use RVO to compute safe velocity to target
+        
+        # For now, return a simple velocity towards target
+        if target_position is None:
+            return np.array([0.0, 0.0])
+        
+        # Simple velocity computation (should be replaced with proper RVO)
+        direction = np.array(target_position) - np.array([0.0, 0.0])  # Assuming current position is origin
+        distance = np.linalg.norm(direction)
+        
+        if distance > 0:
+            velocity = direction / distance * 1.0  # Normalize and scale
+        else:
+            velocity = np.array([0.0, 0.0])
+        
+        return velocity

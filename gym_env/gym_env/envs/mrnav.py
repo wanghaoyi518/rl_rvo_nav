@@ -44,3 +44,20 @@ class mrnav(gym.Env):
 
     def show(self):
         self.ir_gym.show()
+    
+    # Deadlock resolution mode control methods
+    def enable_deadlock_resolution_mode(self, config_file=None):
+        """Enable deadlock resolution mode for testing."""
+        self.ir_gym.enable_deadlock_resolution_mode(config_file)
+    
+    def disable_deadlock_resolution_mode(self):
+        """Disable deadlock resolution mode (restore pure RL)."""
+        self.ir_gym.disable_deadlock_resolution_mode()
+    
+    def is_in_deadlock_resolution_mode(self):
+        """Check if in deadlock resolution mode."""
+        return self.ir_gym.is_in_deadlock_resolution_mode()
+    
+    def get_current_mode(self, agent_id):
+        """Get current mode of an agent."""
+        return self.ir_gym.get_current_mode(agent_id)

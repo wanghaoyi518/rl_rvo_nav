@@ -3,9 +3,14 @@ from math import sqrt, pi
 from gym import spaces
 from gym_env.envs.rvo_inter import rvo_inter
 import numpy as np
+import sys
+import os
+
+# Add the rl_rvo_nav directory to the path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 class ir_gym(env_base):
-    def __init__(self, world_name, neighbors_region=5, neighbors_num=10, vxmax = 1.5, vymax = 1.5, env_train=True, acceler = 0.5, **kwargs):
+    def __init__(self, world_name, neighbors_region=5, neighbors_num=10, vxmax = 1.5, vymax = 1.5, env_train=True, acceler = 0.5, enable_deadlock_resolution=False, **kwargs):
         super(ir_gym, self).__init__(world_name=world_name, **kwargs)
 
         # self.obs_mode = kwargs.get('obs_mode', 0)    # 0 drl_rvo, 1 drl_nrvo
@@ -28,6 +33,19 @@ class ir_gym(env_base):
         self.arrive_flag_cur = False
 
         self.rvo_state_dim = 8
+        
+        # Deadlock resolution module initialization
+        self.enable_deadlock_resolution = enable_deadlock_resolution
+        self.deadlock_detector = None
+        self.mode_controller = None
+        self.par_coordinator = None
+        self.state_manager = None
+        self.par_executor = None
+        self.deadlock_config = None
+        
+        # Initialize deadlock resolution modules if enabled
+        if self.enable_deadlock_resolution:
+            self._initialize_deadlock_modules()
         
 
     def cal_des_omni_list(self):
@@ -69,16 +87,21 @@ class ir_gym(env_base):
         return rvo_reward
 
     def obs_move_reward_list(self, action_list, **kwargs):
-        ts = self.components['robots'].total_states() # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
+        # Check if deadlock resolution is enabled
+        if self.enable_deadlock_resolution:
+            return self._step_with_deadlock_resolution(action_list)
+        else:
+            # Use original pure RL logic
+            ts = self.components['robots'].total_states() # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
 
-        obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action, **kwargs), self.robot_list, action_list))
+            obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action, **kwargs), self.robot_list, action_list))
 
-        obs_list = [l[0] for l in obs_reward_list]
-        reward_list = [l[1] for l in obs_reward_list]
-        done_list = [l[2] for l in obs_reward_list]
-        info_list = [l[3] for l in obs_reward_list]
+            obs_list = [l[0] for l in obs_reward_list]
+            reward_list = [l[1] for l in obs_reward_list]
+            done_list = [l[2] for l in obs_reward_list]
+            info_list = [l[3] for l in obs_reward_list]
 
-        return obs_list, reward_list, done_list, info_list
+            return obs_list, reward_list, done_list, info_list
 
     def observation_reward(self, robot, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs):
 
@@ -173,6 +196,11 @@ class ir_gym(env_base):
     def env_reset(self, reset_mode=1, **kwargs):
         
         self.components['robots'].robots_reset(reset_mode, **kwargs)
+        
+        # Reset deadlock detection for new episode
+        if self.enable_deadlock_resolution and hasattr(self, 'deadlock_detector') and self.deadlock_detector:
+            self.deadlock_detector.reset_episode()
+        
         ts = self.components['robots'].total_states()
         obs_list = list(map(lambda robot: self.observation(robot, ts[1], ts[2], ts[3]), self.robot_list))
 
@@ -197,4 +225,167 @@ class ir_gym(env_base):
             theta = theta + 2*pi
 
         return theta
+    
+    # Deadlock resolution methods
+    def _initialize_deadlock_modules(self):
+        """Initialize deadlock resolution modules."""
+        try:
+            # Add the correct path for imports
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            rl_rvo_nav_dir = os.path.join(current_dir, '..', '..', '..')
+            if rl_rvo_nav_dir not in sys.path:
+                sys.path.insert(0, rl_rvo_nav_dir)
+            
+            from config.deadlock_config import DeadlockConfig
+            from deadlock_resolution.deadlock_detector import DeadlockDetector
+            from mode_management.mode_controller import ModeController
+            from mode_management.state_manager import StateManager
+            from deadlock_resolution.par_coordinator import PARCoordinator
+            from deadlock_resolution.par_executor import PARExecutor
+            from python_pnr.push_and_rotate import PushAndRotate
+            
+            # Initialize configuration
+            self.deadlock_config = DeadlockConfig()
+            
+            # Initialize PNR solver
+            pnr_solver = PushAndRotate()
+            
+            # Initialize deadlock resolution modules
+            self.deadlock_detector = DeadlockDetector(self.deadlock_config.config)
+            self.par_coordinator = PARCoordinator(pnr_solver, self.deadlock_config.config)
+            self.par_executor = PARExecutor(self.deadlock_config.config)
+            self.state_manager = StateManager()
+            self.mode_controller = ModeController(
+                self.deadlock_detector, 
+                self.par_coordinator, 
+                self.deadlock_config.config
+            )
+            
+            print("Deadlock resolution modules initialized successfully")
+            
+        except ImportError as e:
+            print(f"Warning: Could not import deadlock resolution modules: {e}")
+            print("Deadlock resolution will be disabled")
+            self.enable_deadlock_resolution = False
+    
+    def enable_deadlock_resolution_mode(self, config_file=None):
+        """Enable deadlock resolution mode for testing."""
+        if not self.enable_deadlock_resolution:
+            self.enable_deadlock_resolution = True
+            if config_file and self.deadlock_config:
+                self.deadlock_config.load_from_file(config_file)
+            self._initialize_deadlock_modules()
+            print("Deadlock resolution mode enabled")
+    
+    def disable_deadlock_resolution_mode(self):
+        """Disable deadlock resolution mode (restore pure RL)."""
+        self.enable_deadlock_resolution = False
+        print("Deadlock resolution mode disabled")
+    
+    def get_current_mode(self, agent_id):
+        """Get current mode of an agent."""
+        if not self.enable_deadlock_resolution or not self.state_manager:
+            return 'rl_rvo'
+        return self.state_manager.get_agent_mode(agent_id)
+    
+    def is_in_deadlock_resolution_mode(self):
+        """Check if in deadlock resolution mode."""
+        return self.enable_deadlock_resolution
+    
+    def _step_with_deadlock_resolution(self, action_list):
+        """Execute step with deadlock resolution logic."""
+        if not self.enable_deadlock_resolution:
+            return self._step_pure_rl(action_list)
+        
+        # Get current states
+        ts = self.components['robots'].total_states()
+        agent_states = self._get_agent_states_dict(ts[0])
+        neighbor_states = self._get_neighbor_states_dict(ts[1])
+        
+        # Process each agent
+        modified_action_list = action_list.copy()
+        
+        for agent_id, action in enumerate(action_list):
+            current_mode = self.get_current_mode(agent_id)
+            
+            # Check for deadlock and mode switching
+            if current_mode == 'rl_rvo':
+                # Check if should switch to PAR mode
+                if self.deadlock_detector.detect_deadlock(agent_id, agent_states, neighbor_states):
+                    deadlock_participants = self.deadlock_detector.get_deadlock_participants(agent_id, neighbor_states)
+                    
+                    # Only proceed if we have multiple participants
+                    if len(deadlock_participants) > 1:
+                        try:
+                            par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
+                            
+                            # Set PAR mode for all participants
+                            for participant_id in deadlock_participants:
+                                self.state_manager.set_par_mode(participant_id, par_solution)
+                            
+                            print(f"🔴 DEADLOCK DETECTED: Agent {agent_id} triggered deadlock resolution, switching {len(deadlock_participants)} agents to PAR mode")
+                            print(f"   Participants: {deadlock_participants}")
+                        except Exception as e:
+                            print(f"❌ PAR preparation failed for agent {agent_id}: {e}")
+                            # Continue with RL_RVO mode if PAR fails
+            
+            # Execute action based on current mode
+            if current_mode == 'par':
+                try:
+                    par_action = self.par_executor.execute_par_step(agent_id, agent_states)
+                    if par_action and 'action' in par_action:
+                        modified_action_list[agent_id] = par_action['action']
+                    
+                    # Check if PAR is complete
+                    if self.par_coordinator.is_par_complete(agent_id):
+                        self.state_manager.set_rl_rvo_mode(agent_id)
+                        print(f"✅ PAR COMPLETED: Agent {agent_id} finished PAR execution, switching back to RL_RVO")
+                except Exception as e:
+                    print(f"❌ PAR execution failed for agent {agent_id}: {e}")
+                    # Fall back to RL_RVO mode
+                    self.state_manager.set_rl_rvo_mode(agent_id)
+        
+        # Execute the modified actions using pure RL logic
+        return self._step_pure_rl(modified_action_list)
+    
+    def _step_pure_rl(self, action_list):
+        """Execute step with pure RL logic (original behavior)."""
+        # This is the original step logic
+        ts = self.components['robots'].total_states()
+        obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action), self.robot_list, action_list))
+        
+        obs_list = [l[0] for l in obs_reward_list]
+        reward_list = [l[1] for l in obs_reward_list]
+        done_list = [l[2] for l in obs_reward_list]
+        info_list = [l[3] for l in obs_reward_list]
+        
+        return obs_list, reward_list, done_list, info_list
+    
+    def _get_agent_states_dict(self, robot_state_list):
+        """Convert robot state list to dictionary format."""
+        agent_states = {}
+        for i, robot_state in enumerate(robot_state_list):
+            agent_states[i] = {
+                'position': robot_state[0:2],
+                'velocity': robot_state[2:4],
+                'goal': self.robot_list[i].goal if hasattr(self.robot_list[i], 'goal') else None
+            }
+        return agent_states
+    
+    def _get_neighbor_states_dict(self, nei_state_list):
+        """Convert neighbor state list to dictionary format."""
+        neighbor_states = {}
+        for i, nei_states in enumerate(nei_state_list):
+            neighbor_states[i] = {}
+            for j, nei_state in enumerate(nei_states):
+                # Handle different neighbor state formats
+                if isinstance(nei_state, (list, np.ndarray)) and len(nei_state) >= 4:
+                    neighbor_states[i][j] = {
+                        'position': nei_state[0:2],
+                        'velocity': nei_state[2:4]
+                    }
+                else:
+                    # Skip invalid neighbor states
+                    continue
+        return neighbor_states
     

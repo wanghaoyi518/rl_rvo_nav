@@ -1,0 +1,372 @@
+"""
+Deadlock Configuration Module
+
+This module provides configuration parameters for deadlock detection and PAR algorithm.
+It contains all the configurable parameters used by the deadlock resolution system.
+"""
+
+from typing import Dict, Any
+import os
+import json
+
+
+class DeadlockConfig:
+    """
+    Configuration class for deadlock detection and PAR algorithm.
+    
+    This class contains all configurable parameters for the deadlock resolution system,
+    including detection thresholds, PAR parameters, and mode switching settings.
+    """
+    
+    def __init__(self, config_file: str = None):
+        """
+        Initialize the deadlock configuration.
+        
+        Args:
+            config_file: Optional path to configuration file
+        """
+        # Default configuration values
+        self.default_config = {
+            # Deadlock Detection Parameters
+            'DEADLOCK_DETECTION_ENABLED': True,
+            'TRIGGER_TYPE': 'SPEED_BUFFER',  # 'SPEED_BUFFER' or 'COMMON_POINT'
+            'SMALL_SPEED': 0.3,  # Velocity threshold for deadlock detection (increased from 0.1)
+            'VELOCITY_WINDOW_SIZE': 10,  # Number of time steps for velocity averaging (reduced from 50)
+            'MAPF_NUM': 2,  # Minimum number of agents to trigger PAR (reduced from 3)
+            'SIGHT_RADIUS': 1.5,  # Radius for detecting nearby agents (reduced from 2.0)
+            
+            # PAR Algorithm Parameters
+            'PAR_OFFSET': 2,  # Offset for expanding PAR region
+            'GRID_RESOLUTION': 1.0,  # Grid resolution for PAR environment
+            'POSITION_TOLERANCE': 0.1,  # Tolerance for position matching
+            'VELOCITY_SCALE': 1.0,  # Scale factor for velocity calculation
+            'MAX_VELOCITY': 1.5,  # Maximum velocity limit
+            
+            # Mode Switching Parameters
+            'MODE_SWITCH_DELAY': 10,  # Minimum time steps between mode switches
+            'PAR_COMPLETION_THRESHOLD': 0.9,  # Threshold for considering PAR complete
+            'GOAL_TOLERANCE': 0.5,  # Tolerance for reaching goal
+            'NARROW_CORRIDOR_THRESHOLD': 4,  # Number of agents indicating narrow corridor
+            'CONFINED_AREA_VELOCITY_THRESHOLD': 0.05,  # Velocity threshold for confined area
+            
+            # Communication and Coordination Parameters
+            'COMMUNICATION_RANGE': 3.0,  # Communication range for agents
+            'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
+            
+            # Performance and Debug Parameters
+            'DEBUG_MODE': True,  # Enable debug output (changed from False)
+            'LOG_LEVEL': 'INFO',  # Logging level
+            'SAVE_STATISTICS': True,  # Save performance statistics
+            'STATISTICS_INTERVAL': 100,  # Interval for saving statistics
+            
+            # Advanced Parameters
+            'ENABLE_DYNAMIC_PARTICIPANTS': True,  # Allow dynamic participant addition
+            'MAX_PAR_PARTICIPANTS': 10,  # Maximum number of PAR participants
+            'PAR_TIMEOUT': 500,  # Timeout for PAR execution
+            'ENABLE_POSITION_SYNC': True,  # Enable position synchronization after PAR
+        }
+        
+        # Load configuration from file if provided
+        self.config = self.default_config.copy()
+        if config_file and os.path.exists(config_file):
+            self.load_from_file(config_file)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get a configuration value.
+        
+        Args:
+            key: Configuration key
+            default: Default value if key not found
+            
+        Returns:
+            Any: Configuration value
+        """
+        return self.config.get(key, default)
+    
+    def set(self, key: str, value: Any):
+        """
+        Set a configuration value.
+        
+        Args:
+            key: Configuration key
+            value: Configuration value
+        """
+        self.config[key] = value
+    
+    def load_from_file(self, config_file: str):
+        """
+        Load configuration from a JSON file.
+        
+        Args:
+            config_file: Path to configuration file
+        """
+        try:
+            with open(config_file, 'r') as f:
+                file_config = json.load(f)
+            
+            # Update configuration with file values
+            self.config.update(file_config)
+            print(f"Configuration loaded from {config_file}")
+            
+        except Exception as e:
+            print(f"Error loading configuration from {config_file}: {e}")
+            print("Using default configuration")
+    
+    def save_to_file(self, config_file: str):
+        """
+        Save current configuration to a JSON file.
+        
+        Args:
+            config_file: Path to configuration file
+        """
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(self.config, f, indent=2)
+            print(f"Configuration saved to {config_file}")
+            
+        except Exception as e:
+            print(f"Error saving configuration to {config_file}: {e}")
+    
+    def get_deadlock_detection_config(self) -> Dict:
+        """
+        Get configuration specific to deadlock detection.
+        
+        Returns:
+            Dict: Deadlock detection configuration
+        """
+        return {
+            'DEADLOCK_DETECTION_ENABLED': self.get('DEADLOCK_DETECTION_ENABLED'),
+            'TRIGGER_TYPE': self.get('TRIGGER_TYPE'),
+            'SMALL_SPEED': self.get('SMALL_SPEED'),
+            'VELOCITY_WINDOW_SIZE': self.get('VELOCITY_WINDOW_SIZE'),
+            'MAPF_NUM': self.get('MAPF_NUM'),
+            'SIGHT_RADIUS': self.get('SIGHT_RADIUS'),
+        }
+    
+    def get_par_config(self) -> Dict:
+        """
+        Get configuration specific to PAR algorithm.
+        
+        Returns:
+            Dict: PAR algorithm configuration
+        """
+        return {
+            'PAR_OFFSET': self.get('PAR_OFFSET'),
+            'GRID_RESOLUTION': self.get('GRID_RESOLUTION'),
+            'POSITION_TOLERANCE': self.get('POSITION_TOLERANCE'),
+            'VELOCITY_SCALE': self.get('VELOCITY_SCALE'),
+            'MAX_VELOCITY': self.get('MAX_VELOCITY'),
+            'MAX_PAR_PARTICIPANTS': self.get('MAX_PAR_PARTICIPANTS'),
+            'PAR_TIMEOUT': self.get('PAR_TIMEOUT'),
+            'ENABLE_POSITION_SYNC': self.get('ENABLE_POSITION_SYNC'),
+        }
+    
+    def get_mode_switching_config(self) -> Dict:
+        """
+        Get configuration specific to mode switching.
+        
+        Returns:
+            Dict: Mode switching configuration
+        """
+        return {
+            'MODE_SWITCH_DELAY': self.get('MODE_SWITCH_DELAY'),
+            'PAR_COMPLETION_THRESHOLD': self.get('PAR_COMPLETION_THRESHOLD'),
+            'GOAL_TOLERANCE': self.get('GOAL_TOLERANCE'),
+            'NARROW_CORRIDOR_THRESHOLD': self.get('NARROW_CORRIDOR_THRESHOLD'),
+            'CONFINED_AREA_VELOCITY_THRESHOLD': self.get('CONFINED_AREA_VELOCITY_THRESHOLD'),
+        }
+    
+    def get_communication_config(self) -> Dict:
+        """
+        Get configuration specific to communication and coordination.
+        
+        Returns:
+            Dict: Communication configuration
+        """
+        return {
+            'COMMUNICATION_RANGE': self.get('COMMUNICATION_RANGE'),
+            'COORDINATION_TIMEOUT': self.get('COORDINATION_TIMEOUT'),
+            'ENABLE_DYNAMIC_PARTICIPANTS': self.get('ENABLE_DYNAMIC_PARTICIPANTS'),
+        }
+    
+    def get_debug_config(self) -> Dict:
+        """
+        Get configuration specific to debugging and performance monitoring.
+        
+        Returns:
+            Dict: Debug configuration
+        """
+        return {
+            'DEBUG_MODE': self.get('DEBUG_MODE'),
+            'LOG_LEVEL': self.get('LOG_LEVEL'),
+            'SAVE_STATISTICS': self.get('SAVE_STATISTICS'),
+            'STATISTICS_INTERVAL': self.get('STATISTICS_INTERVAL'),
+        }
+    
+    def validate_config(self) -> bool:
+        """
+        Validate the current configuration.
+        
+        Returns:
+            bool: True if configuration is valid
+        """
+        errors = []
+        
+        # Check required parameters
+        required_params = [
+            'SMALL_SPEED', 'VELOCITY_WINDOW_SIZE', 'MAPF_NUM', 'SIGHT_RADIUS',
+            'PAR_OFFSET', 'GRID_RESOLUTION', 'POSITION_TOLERANCE',
+            'MODE_SWITCH_DELAY', 'GOAL_TOLERANCE'
+        ]
+        
+        for param in required_params:
+            if param not in self.config:
+                errors.append(f"Missing required parameter: {param}")
+            elif self.config[param] is None:
+                errors.append(f"Parameter {param} cannot be None")
+        
+        # Check parameter ranges
+        if self.get('SMALL_SPEED', 0) <= 0:
+            errors.append("SMALL_SPEED must be positive")
+        
+        if self.get('VELOCITY_WINDOW_SIZE', 0) <= 0:
+            errors.append("VELOCITY_WINDOW_SIZE must be positive")
+        
+        if self.get('MAPF_NUM', 0) < 1:
+            errors.append("MAPF_NUM must be at least 1")
+        
+        if self.get('SIGHT_RADIUS', 0) <= 0:
+            errors.append("SIGHT_RADIUS must be positive")
+        
+        if self.get('GRID_RESOLUTION', 0) <= 0:
+            errors.append("GRID_RESOLUTION must be positive")
+        
+        if self.get('POSITION_TOLERANCE', 0) <= 0:
+            errors.append("POSITION_TOLERANCE must be positive")
+        
+        if self.get('MODE_SWITCH_DELAY', 0) < 0:
+            errors.append("MODE_SWITCH_DELAY must be non-negative")
+        
+        if self.get('GOAL_TOLERANCE', 0) <= 0:
+            errors.append("GOAL_TOLERANCE must be positive")
+        
+        # Check trigger type
+        trigger_type = self.get('TRIGGER_TYPE')
+        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT']:
+            errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER' or 'COMMON_POINT'")
+        
+        # Report errors
+        if errors:
+            print("Configuration validation errors:")
+            for error in errors:
+                print(f"  - {error}")
+            return False
+        
+        return True
+    
+    def get_config_summary(self) -> Dict:
+        """
+        Get a summary of the current configuration.
+        
+        Returns:
+            Dict: Configuration summary
+        """
+        return {
+            'deadlock_detection': self.get_deadlock_detection_config(),
+            'par_algorithm': self.get_par_config(),
+            'mode_switching': self.get_mode_switching_config(),
+            'communication': self.get_communication_config(),
+            'debug': self.get_debug_config(),
+        }
+    
+    def reset_to_defaults(self):
+        """Reset configuration to default values."""
+        self.config = self.default_config.copy()
+    
+    def update_from_dict(self, config_dict: Dict):
+        """
+        Update configuration from a dictionary.
+        
+        Args:
+            config_dict: Dictionary containing configuration updates
+        """
+        self.config.update(config_dict)
+    
+    def create_preset_config(self, preset_name: str) -> Dict:
+        """
+        Create a preset configuration for different scenarios.
+        
+        Args:
+            preset_name: Name of the preset ('conservative', 'aggressive', 'balanced')
+            
+        Returns:
+            Dict: Preset configuration
+        """
+        presets = {
+            'conservative': {
+                'SMALL_SPEED': 0.05,  # Lower threshold for early detection
+                'VELOCITY_WINDOW_SIZE': 100,  # Longer window for stability
+                'MAPF_NUM': 2,  # Trigger PAR with fewer agents
+                'MODE_SWITCH_DELAY': 20,  # Longer delay between switches
+                'PAR_OFFSET': 3,  # Larger PAR region
+                'DEBUG_MODE': True,
+            },
+            'aggressive': {
+                'SMALL_SPEED': 0.2,  # Higher threshold for late detection
+                'VELOCITY_WINDOW_SIZE': 25,  # Shorter window for responsiveness
+                'MAPF_NUM': 4,  # Trigger PAR with more agents
+                'MODE_SWITCH_DELAY': 5,  # Shorter delay between switches
+                'PAR_OFFSET': 1,  # Smaller PAR region
+                'DEBUG_MODE': False,
+            },
+            'balanced': {
+                'SMALL_SPEED': 0.1,  # Balanced threshold
+                'VELOCITY_WINDOW_SIZE': 50,  # Balanced window
+                'MAPF_NUM': 3,  # Balanced trigger condition
+                'MODE_SWITCH_DELAY': 10,  # Balanced delay
+                'PAR_OFFSET': 2,  # Balanced region size
+                'DEBUG_MODE': False,
+            }
+        }
+        
+        if preset_name in presets:
+            return presets[preset_name]
+        else:
+            print(f"Unknown preset: {preset_name}. Available presets: {list(presets.keys())}")
+            return {}
+    
+    def apply_preset(self, preset_name: str):
+        """
+        Apply a preset configuration.
+        
+        Args:
+            preset_name: Name of the preset to apply
+        """
+        preset_config = self.create_preset_config(preset_name)
+        if preset_config:
+            self.update_from_dict(preset_config)
+            print(f"Applied preset configuration: {preset_name}")
+
+
+# Default configuration instance
+default_config = DeadlockConfig()
+
+# Preset configurations
+def get_conservative_config() -> DeadlockConfig:
+    """Get conservative configuration preset."""
+    config = DeadlockConfig()
+    config.apply_preset('conservative')
+    return config
+
+def get_aggressive_config() -> DeadlockConfig:
+    """Get aggressive configuration preset."""
+    config = DeadlockConfig()
+    config.apply_preset('aggressive')
+    return config
+
+def get_balanced_config() -> DeadlockConfig:
+    """Get balanced configuration preset."""
+    config = DeadlockConfig()
+    config.apply_preset('balanced')
+    return config
