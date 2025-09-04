@@ -9,6 +9,23 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 import math
+import sys
+import os
+
+# Add the policy_test_with_deadlock directory to the path for logger import
+try:
+    # Try relative import first
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'rl_rvo_nav', 'policy_test_with_deadlock'))
+    from deadlock_logger import get_deadlock_logger
+except ImportError:
+    try:
+        # Try absolute import
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'rl_rvo_nav', 'policy_test_with_deadlock'))
+        from deadlock_logger import get_deadlock_logger
+    except ImportError:
+        # If all imports fail, set to None and handle gracefully
+        get_deadlock_logger = None
+        print("Warning: Could not import deadlock_logger, logging will be disabled")
 
 
 class DeadlockDetector:
@@ -34,6 +51,16 @@ class DeadlockDetector:
         self.sight_radius = config.get('SIGHT_RADIUS', 2.0)
         self.velocity_window_size = config.get('VELOCITY_WINDOW_SIZE', 5)
         
+        # Hybrid detection parameters
+        self.hybrid_mode = config.get('HYBRID_MODE', 'AND')
+        self.speed_buffer_weight = config.get('SPEED_BUFFER_WEIGHT', 0.6)
+        self.common_point_weight = config.get('COMMON_POINT_WEIGHT', 0.4)
+        
+        # Enhanced speed buffer parameters
+        self.speed_buffer_avg_threshold = config.get('SPEED_BUFFER_AVG_THRESHOLD', 0.1)
+        self.speed_buffer_max_threshold = config.get('SPEED_BUFFER_MAX_THRESHOLD', 0.2)
+        self.speed_buffer_min_history_ratio = config.get('SPEED_BUFFER_MIN_HISTORY_RATIO', 0.8)
+        
         # Velocity history for each agent
         self.velocity_history = defaultdict(list)
         
@@ -42,6 +69,32 @@ class DeadlockDetector:
         
         # Episode counter for debugging
         self.episode_counter = 0
+        
+        # Episode start delay for deadlock detection
+        self.episode_start_delay = config.get('EPISODE_START_DELAY', 50)
+        self.step_counter = 0
+        
+        # Cooldown mechanism for deadlock detection
+        self.deadlock_detection_cooldown = config.get('DEADLOCK_DETECTION_COOLDOWN', 50)
+        self.last_deadlock_detection = {}  # Track last detection time for each agent
+        
+        # Initialize logger
+        try:
+            if get_deadlock_logger is not None:
+                self.logger = get_deadlock_logger()
+                self.logger.logger.info(f"🔧 DeadlockDetector initialized with config: {config}")
+            else:
+                self.logger = None
+                print("Deadlock logger not available, logging disabled")
+        except Exception as e:
+            print(f"Warning: Failed to initialize deadlock logger: {e}")
+            self.logger = None
+    
+    def set_logger(self, logger):
+        """Set the logger instance for this detector."""
+        self.logger = logger
+        if self.logger:
+            self.logger.logger.info(f"🔧 Logger set for DeadlockDetector")
     
     def detect_deadlock(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
         """
@@ -57,18 +110,65 @@ class DeadlockDetector:
         """
         if not self.deadlock_detection_enabled:
             return False
+        
+        # Increment step counter
+        self.step_counter += 1
+        
+        # Check episode start delay - don't detect deadlock too early
+        if self.step_counter < self.episode_start_delay:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 EPISODE START DELAY: Agent {agent_id}, Step {self.step_counter} < {self.episode_start_delay}")
+            return False
+        
+        # Check cooldown period - prevent frequent deadlock detection for the same agent
+        if agent_id in self.last_deadlock_detection:
+            steps_since_last_detection = self.step_counter - self.last_deadlock_detection[agent_id]
+            if steps_since_last_detection < self.deadlock_detection_cooldown:
+                if self.logger:
+                    self.logger.logger.debug(f"🔍 COOLDOWN: Agent {agent_id}, Step {self.step_counter}, Last detection at step {self.last_deadlock_detection[agent_id]}, Cooldown: {self.deadlock_detection_cooldown}")
+                return False
+        
+        # Log deadlock detection attempt
+        if self.logger:
+            self.logger.logger.debug(f"🔍 DEADLOCK DETECTION: Agent {agent_id}, Trigger type: {self.trigger_type}")
+        
+        # Update velocity history for all agents (current agent and neighbors)
+        self._update_all_velocity_histories(agent_id, agent_states, neighbor_states)
             
         if self.trigger_type == 'SPEED_BUFFER':
-            return self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+            result = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
         elif self.trigger_type == 'COMMON_POINT':
-            return self.check_common_point_trigger(agent_id, agent_states, neighbor_states)
+            result = self.check_common_point_trigger(agent_id, agent_states, neighbor_states)
+        elif self.trigger_type == 'HYBRID':
+            result = self.check_hybrid_trigger(agent_id, agent_states, neighbor_states)
         else:
             # Default to speed buffer trigger
-            return self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+            result = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+        
+        # Log detection result and update cooldown
+        if result:
+            # Update cooldown time for this agent
+            self.last_deadlock_detection[agent_id] = self.step_counter
+            if self.logger:
+                self.logger.log_deadlock_detection(agent_id, self.trigger_type, {
+                    'agent_states': {k: v for k, v in agent_states.items() if k == agent_id},
+                    'neighbor_count': len(neighbor_states),
+                    'trigger_type': self.trigger_type
+                })
+        else:
+            if self.logger:
+                self.logger.logger.debug(f"✅ NO DEADLOCK: Agent {agent_id}")
+        
+        return result
     
     def check_speed_buffer_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
         """
         Check deadlock using speed buffer trigger mechanism.
+        
+        Based on the orca_mapf paper implementation:
+        - Only trigger if we have enough velocity history data
+        - Only trigger if neighbors also have enough velocity history
+        - Avoid triggering at episode start when agents are stationary
         
         Args:
             agent_id: ID of the agent to check
@@ -84,36 +184,59 @@ class DeadlockDetector:
             
         agent_state = agent_states[agent_id]
         
-        # Calculate current velocity
-        current_velocity = self.calculate_current_velocity(agent_state)
-        
-        # Update velocity history
-        self.update_velocity_history(agent_id, current_velocity)
+        # Check if we have enough velocity history data (at least 80% of window size for more stability)
+        min_history_required = int(self.velocity_window_size * 0.8)
+        if len(self.velocity_history[agent_id]) < min_history_required:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 INSUFFICIENT HISTORY: Agent {agent_id} has {len(self.velocity_history[agent_id])} velocity samples, need at least {min_history_required}")
+            return False
         
         # Calculate average velocity
         avg_velocity = self.calculate_average_velocity(agent_id)
         
         # Check if agent velocity is below threshold
         if avg_velocity < self.small_speed:
-            # Check neighbor velocities
+            # Check neighbor velocities - only consider neighbors with sufficient history
             neighbor_low_velocity_count = 0
             low_velocity_neighbors = []
-            for neighbor_id, neighbor_state in neighbor_states.items():
-                neighbor_avg_velocity = self.calculate_average_velocity(neighbor_id)
-                if neighbor_avg_velocity < self.small_speed:
-                    neighbor_low_velocity_count += 1
-                    low_velocity_neighbors.append(neighbor_id)
+            neighbors_with_sufficient_history = 0
             
-            # If at least one neighbor also has low velocity, consider it deadlock
-            if neighbor_low_velocity_count > 0:
-                print(f"🔍 DEADLOCK CHECK: Agent {agent_id} velocity={avg_velocity:.3f} < {self.small_speed}, {neighbor_low_velocity_count} neighbors also slow: {low_velocity_neighbors}")
+            for neighbor_id, neighbor_state in neighbor_states.items():
+                # Check if neighbor has sufficient velocity history
+                if neighbor_id in self.velocity_history and len(self.velocity_history[neighbor_id]) >= min_history_required:
+                    neighbors_with_sufficient_history += 1
+                    neighbor_avg_velocity = self.calculate_average_velocity(neighbor_id)
+                    if neighbor_avg_velocity < self.small_speed:
+                        neighbor_low_velocity_count += 1
+                        low_velocity_neighbors.append(neighbor_id)
+            
+            # Only trigger if we have at least one neighbor with sufficient history and low velocity
+            if neighbors_with_sufficient_history > 0 and neighbor_low_velocity_count > 0:
+                if self.logger:
+                    self.logger.log_deadlock_check(agent_id, avg_velocity, self.small_speed, neighbor_low_velocity_count)
+                    self.logger.logger.debug(f"   Low velocity neighbors: {low_velocity_neighbors}")
+                    self.logger.logger.debug(f"   Neighbors with sufficient history: {neighbors_with_sufficient_history}")
+                else:
+                    # print(f"🔍 DEADLOCK CHECK: Agent {agent_id} velocity={avg_velocity:.3f} < {self.small_speed}, {neighbor_low_velocity_count} neighbors also slow: {low_velocity_neighbors}")
+                    pass
                 return True
+            else:
+                if self.logger:
+                    self.logger.logger.debug(f"🔍 INSUFFICIENT NEIGHBOR HISTORY: Agent {agent_id}, neighbors with history: {neighbors_with_sufficient_history}, low velocity neighbors: {neighbor_low_velocity_count}")
+        else:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 VELOCITY CHECK: Agent {agent_id} velocity={avg_velocity:.3f} >= {self.small_speed}")
         
         return False
     
     def check_common_point_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
         """
         Check deadlock using common point trigger mechanism.
+        
+        Based on the orca_mapf paper implementation:
+        - Check if number of neighbors >= MAPFNum
+        - Check if distance to goal < sightRadius
+        - Also apply episode start delay and velocity history requirements for stability
         
         Args:
             agent_id: ID of the agent to check
@@ -129,21 +252,35 @@ class DeadlockDetector:
             
         agent_state = agent_states[agent_id]
         
-        # Count agents near the goal (including current agent)
-        agents_near_goal = 1  # Start with current agent
+        # Check if we have enough velocity history data (at least 80% of window size for stability)
+        min_history_required = int(self.velocity_window_size * 0.8)
+        if len(self.velocity_history[agent_id]) < min_history_required:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 COMMON POINT - INSUFFICIENT HISTORY: Agent {agent_id} has {len(self.velocity_history[agent_id])} velocity samples, need at least {min_history_required}")
+            return False
         
-        # Check neighbors
-        for neighbor_id, neighbor_state in neighbor_states.items():
-            distance_to_goal = self.calculate_distance_to_goal(neighbor_state)
-            if distance_to_goal < self.sight_radius:
-                agents_near_goal += 1
+        # Check if number of neighbors >= MAPFNum
+        neighbor_count = len(neighbor_states)
+        if neighbor_count < self.mapf_num:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 COMMON POINT CHECK: Agent {agent_id} has {neighbor_count} neighbors (need >= {self.mapf_num})")
+            return False
         
-        # If enough agents are near the goal, trigger deadlock detection
-        if agents_near_goal >= self.mapf_num:
-            print(f"🔍 COMMON POINT CHECK: Agent {agent_id} detected {agents_near_goal} agents near goal (threshold: {self.mapf_num})")
-            return True
+        # Check if distance to goal < sightRadius
+        distance_to_goal = self.calculate_distance_to_goal(agent_state)
+        if distance_to_goal >= self.sight_radius:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 COMMON POINT CHECK: Agent {agent_id} distance to goal {distance_to_goal:.3f} >= {self.sight_radius}")
+            return False
         
-        return False
+        # Both conditions met: trigger deadlock detection
+        if self.logger:
+            self.logger.logger.debug(f"🔍 COMMON POINT CHECK: Agent {agent_id} triggered - {neighbor_count} neighbors, distance to goal {distance_to_goal:.3f} < {self.sight_radius}")
+        else:
+            # print(f"🔍 COMMON POINT CHECK: Agent {agent_id} triggered - {neighbor_count} neighbors, distance to goal {distance_to_goal:.3f} < {self.sight_radius}")
+            pass
+        
+        return True
     
     def get_deadlock_participants(self, agent_id: int, neighbor_states: Dict) -> List[int]:
         """
@@ -175,7 +312,12 @@ class DeadlockDetector:
         """Reset velocity history for new episode."""
         self.velocity_history.clear()
         self.episode_counter += 1
-        # print(f"🔄 Episode {self.episode_counter}: Reset velocity history for deadlock detection")
+        self.step_counter = 0  # Reset step counter for new episode
+        if self.logger:
+            self.logger.logger.info(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
+        else:
+            # print(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
+            pass
     
     def calculate_current_velocity(self, agent_state: Dict) -> float:
         """
@@ -211,11 +353,33 @@ class DeadlockDetector:
             agent_id: ID of the agent
             velocity: Current velocity value
         """
+        if agent_id not in self.velocity_history:
+            self.velocity_history[agent_id] = []
+            
         self.velocity_history[agent_id].append(velocity)
         
         # Keep only the last window_size entries
         if len(self.velocity_history[agent_id]) > self.velocity_window_size:
             self.velocity_history[agent_id] = self.velocity_history[agent_id][-self.velocity_window_size:]
+    
+    def _update_all_velocity_histories(self, agent_id: int, agent_states: Dict, neighbor_states: Dict):
+        """
+        Update velocity history for current agent and all neighbors.
+        
+        Args:
+            agent_id: ID of the current agent
+            agent_states: Dictionary of all agent states
+            neighbor_states: Dictionary of neighbor states
+        """
+        # Update current agent velocity history
+        if agent_id in agent_states:
+            current_velocity = self.calculate_current_velocity(agent_states[agent_id])
+            self.update_velocity_history(agent_id, current_velocity)
+        
+        # Update neighbor velocity histories
+        for neighbor_id, neighbor_state in neighbor_states.items():
+            current_velocity = self.calculate_current_velocity(neighbor_state)
+            self.update_velocity_history(neighbor_id, current_velocity)
     
     def calculate_average_velocity(self, agent_id: int) -> float:
         """
@@ -267,3 +431,114 @@ class DeadlockDetector:
     def reset_all_history(self):
         """Reset velocity history for all agents."""
         self.velocity_history.clear()
+    
+    def check_hybrid_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
+        """
+        Check deadlock using hybrid trigger mechanism.
+        
+        Combines speed buffer and common point triggers based on configuration:
+        - AND mode: Both conditions must be met
+        - OR mode: Either condition can trigger
+        
+        Args:
+            agent_id: ID of the agent to check
+            agent_states: Dictionary of all agent states
+            neighbor_states: Dictionary of neighbor states for the agent
+            
+        Returns:
+            bool: True if deadlock is detected based on hybrid criteria
+        """
+        if self.logger:
+            self.logger.logger.debug(f"🔍 HYBRID TRIGGER: Agent {agent_id}, Mode: {self.hybrid_mode}")
+        
+        # Check speed buffer trigger
+        speed_buffer_result = self.check_enhanced_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+        
+        # Check common point trigger
+        common_point_result = self.check_common_point_trigger(agent_id, agent_states, neighbor_states)
+        
+        # Combine results based on hybrid mode
+        if self.hybrid_mode == 'AND':
+            result = speed_buffer_result and common_point_result
+            if self.logger:
+                self.logger.logger.debug(f"🔍 HYBRID AND: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Result: {result}")
+        else:  # OR mode
+            result = speed_buffer_result or common_point_result
+            if self.logger:
+                self.logger.logger.debug(f"🔍 HYBRID OR: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Result: {result}")
+        
+        return result
+    
+    def check_enhanced_speed_buffer_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
+        """
+        Check deadlock using enhanced speed buffer trigger mechanism.
+        
+        Enhanced version that considers both average and maximum velocity over time window:
+        - Average velocity must be below SPEED_BUFFER_AVG_THRESHOLD
+        - Maximum velocity must be below SPEED_BUFFER_MAX_THRESHOLD
+        - Both current agent and neighbors must meet criteria
+        
+        Args:
+            agent_id: ID of the agent to check
+            agent_states: Dictionary of all agent states
+            neighbor_states: Dictionary of neighbor states for the agent
+            
+        Returns:
+            bool: True if deadlock is detected based on enhanced speed criteria
+        """
+        # Get current agent state
+        if agent_id not in agent_states:
+            return False
+            
+        agent_state = agent_states[agent_id]
+        
+        # Check if we have enough velocity history data
+        min_history_required = int(self.velocity_window_size * self.speed_buffer_min_history_ratio)
+        if len(self.velocity_history[agent_id]) < min_history_required:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 ENHANCED SPEED BUFFER - INSUFFICIENT HISTORY: Agent {agent_id} has {len(self.velocity_history[agent_id])} velocity samples, need at least {min_history_required}")
+            return False
+        
+        # Calculate enhanced velocity metrics
+        avg_velocity = self.calculate_average_velocity(agent_id)
+        max_velocity = max(self.velocity_history[agent_id])
+        
+        # Check if agent meets enhanced velocity criteria
+        if avg_velocity >= self.speed_buffer_avg_threshold or max_velocity >= self.speed_buffer_max_threshold:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 ENHANCED SPEED BUFFER - AGENT OK: Agent {agent_id} avg_vel={avg_velocity:.3f} (>= {self.speed_buffer_avg_threshold}), max_vel={max_velocity:.3f} (>= {self.speed_buffer_max_threshold})")
+            return False
+        
+        # Check neighbor velocities - only consider neighbors with sufficient history
+        neighbor_low_velocity_count = 0
+        low_velocity_neighbors = []
+        neighbors_with_sufficient_history = 0
+        
+        for neighbor_id, neighbor_state in neighbor_states.items():
+            # Check if neighbor has sufficient velocity history
+            if neighbor_id in self.velocity_history and len(self.velocity_history[neighbor_id]) >= min_history_required:
+                neighbors_with_sufficient_history += 1
+                neighbor_avg_velocity = self.calculate_average_velocity(neighbor_id)
+                neighbor_max_velocity = max(self.velocity_history[neighbor_id])
+                
+                # Check if neighbor meets enhanced velocity criteria
+                if neighbor_avg_velocity < self.speed_buffer_avg_threshold and neighbor_max_velocity < self.speed_buffer_max_threshold:
+                    neighbor_low_velocity_count += 1
+                    low_velocity_neighbors.append(neighbor_id)
+        
+        # Only trigger if we have at least one neighbor with sufficient history and low velocity
+        if neighbors_with_sufficient_history > 0 and neighbor_low_velocity_count > 0:
+            if self.logger:
+                self.logger.log_deadlock_check(agent_id, avg_velocity, self.speed_buffer_avg_threshold, neighbor_low_velocity_count)
+                self.logger.logger.debug(f"   Enhanced speed buffer triggered - Agent {agent_id}: avg_vel={avg_velocity:.3f}, max_vel={max_velocity:.3f}")
+                self.logger.logger.debug(f"   Low velocity neighbors: {low_velocity_neighbors}")
+                self.logger.logger.debug(f"   Neighbors with sufficient history: {neighbors_with_sufficient_history}")
+            else:
+                # print(f"🔍 ENHANCED SPEED BUFFER TRIGGERED: Agent {agent_id} avg_vel={avg_velocity:.3f}, max_vel={max_velocity:.3f}, {neighbor_low_velocity_count} neighbors also slow: {low_velocity_neighbors}")
+                pass
+            return True
+        else:
+            if self.logger:
+                self.logger.logger.debug(f"🔍 ENHANCED SPEED BUFFER - INSUFFICIENT NEIGHBOR HISTORY: Agent {agent_id}, neighbors with history: {neighbors_with_sufficient_history}, low velocity neighbors: {neighbor_low_velocity_count}")
+        
+        return False

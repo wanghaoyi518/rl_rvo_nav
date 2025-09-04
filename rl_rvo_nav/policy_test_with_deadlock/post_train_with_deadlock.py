@@ -50,6 +50,14 @@ class post_train_with_deadlock:
 
         figure_id = 0
         while n < self.num_episodes:
+            
+            # Log episode start if deadlock resolution is enabled
+            if self.env.is_in_deadlock_resolution_mode() and hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
+                self.env.ir_gym.deadlock_logger.log_episode_start(n, self.robot_number, {
+                    'max_ep_len': self.max_ep_len,
+                    'reset_mode': self.reset_mode,
+                    'render': self.render
+                })
 
             # if n == 1:
             #     self.show_traj = True
@@ -98,6 +106,13 @@ class post_train_with_deadlock:
             if np.max(d) or (ep_len == self.max_ep_len) or np.min(info):
                 speed = np.mean(speed_list)
                 figure_id = 0
+                
+                # Log episode summary if deadlock resolution is enabled
+                if self.env.is_in_deadlock_resolution_mode() and hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
+                    self.env.ir_gym.deadlock_logger.log_episode_summary()
+                    # Save episode data
+                    self.env.ir_gym.deadlock_logger.save_episode_data()
+                
                 if np.min(info):
                     ep_len_list.append(ep_len)
                     if self.inf_print: print('Successful, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
@@ -167,9 +182,40 @@ class post_train_with_deadlock:
         if not self.env.is_in_deadlock_resolution_mode():
             return ""
         
-        summary = f" | deadlock_detections: {self.deadlock_stats['deadlock_detections']}"
-        summary += f" | mode_switches: {self.deadlock_stats['mode_switches']}"
-        summary += f" | par_executions: {self.deadlock_stats['par_executions']}"
+        # 尝试从DeadlockLogger获取真实统计
+        total_deadlock_detections = 0
+        total_mode_switches = 0
+        total_par_executions = 0
+        
+        if hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
+            logger = self.env.ir_gym.deadlock_logger
+            if hasattr(logger, 'episode_data') and logger.episode_data:
+                # 从所有episode数据中累计统计
+                for episode_data in logger.episode_data.values():
+                    if isinstance(episode_data, dict):
+                        # 从stats字段获取统计信息（logger保存的数据结构）
+                        if 'stats' in episode_data:
+                            stats = episode_data['stats']
+                            total_deadlock_detections += stats.get('deadlock_detections', 0)
+                            total_mode_switches += stats.get('mode_switches', 0)
+                            total_par_executions += stats.get('par_executions', 0)
+                        # 兼容旧格式，从episode_deadlock_count获取
+                        elif 'episode_deadlock_count' in episode_data:
+                            total_deadlock_detections += episode_data.get('episode_deadlock_count', 0)
+                            total_mode_switches += episode_data.get('mode_switches', 0)
+                            total_par_executions += episode_data.get('par_executions', 0)
+        
+        # 如果无法从logger获取，则使用本地统计
+        if total_deadlock_detections == 0:
+            total_deadlock_detections = self.deadlock_stats['deadlock_detections']
+        if total_mode_switches == 0:
+            total_mode_switches = self.deadlock_stats['mode_switches']
+        if total_par_executions == 0:
+            total_par_executions = self.deadlock_stats['par_executions']
+        
+        summary = f" | deadlock_detections: {total_deadlock_detections}"
+        summary += f" | mode_switches: {total_mode_switches}"
+        summary += f" | par_executions: {total_par_executions}"
         
         return summary
 

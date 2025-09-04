@@ -92,7 +92,7 @@ par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, 
 args = parser.parse_args([
     '--train_epoch', '1000', 
     '--robot_number', '4', 
-    '--load_name', 'r4_1/r4_1_check_point_150.pt', 
+    '--load_name', 'r4_2/r4_2_check_point_200.pt', 
     '--con_train', 
     '--use_gpu'
 ])

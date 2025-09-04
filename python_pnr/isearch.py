@@ -66,6 +66,17 @@ class ISearch:
         while open_set:
             self.sresult.numberofsteps += 1
             
+            # 检查超时
+            current_time = time.time()
+            if current_time - begin_time > 1.0:  # 1秒超时
+                print(f"⚠️ A* search timeout after {self.sresult.numberofsteps} steps")
+                break
+            
+            # 检查最大步数
+            if self.sresult.numberofsteps > 1000:  # 最大1000步
+                print(f"⚠️ A* search exceeded max steps ({self.sresult.numberofsteps})")
+                break
+            
             # 获取当前节点
             _, current = heapq.heappop(open_set)
             

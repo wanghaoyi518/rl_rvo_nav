@@ -75,7 +75,7 @@ par_train.add_argument('--save_freq', default=50)
 par_train.add_argument('--save_figure', default=False)
 par_train.add_argument('--figure_save_path', default='figure')
 par_train.add_argument('--save_path', default=str(cur_path / 'model_save') + '/')
-par_train.add_argument('--save_name', default='r4_mode7_stage3_')  # Stage 3模型命名
+par_train.add_argument('--save_name', default='r4_mode7_stage4_')  # Stage 3模型命名
 par_train.add_argument('--load_path', default=str(cur_path / 'model_save')+ '/')
 par_train.add_argument('--load_name', default='r4_mode7_stage3_8_0/r4_mode7_stage3_8_0_check_point_500.pt')  # 从stage2模型开始
 par_train.add_argument('--save_result', type=bool, default=True)
@@ -90,9 +90,9 @@ par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, 
 
 # 解析参数 (使用默认值，适合Stage 3)
 args = parser.parse_args([
-    '--train_epoch', '2000', 
+    '--train_epoch', '800', 
     '--robot_number', '10', 
-    '--load_name', 'r4_mode7_stage3_10_0/r4_mode7_stage3_10_0_check_point_500.pt', 
+    '--load_name', 'r4_mode7_stage3_8_2/r4_mode7_stage3_8_2_check_point_200.pt', 
     '--con_train', 
     '--use_gpu'
 ])

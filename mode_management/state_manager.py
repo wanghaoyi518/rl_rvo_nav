@@ -492,3 +492,10 @@ class StateManager:
             summary['agent_modes'][agent_id] = self.get_agent_mode(agent_id)
         
         return summary
+    
+    def reset_episode(self):
+        """
+        Reset all agent states for a new episode.
+        """
+        self.agent_states.clear()
+        print("🔄 StateManager: Reset all agent states for new episode")

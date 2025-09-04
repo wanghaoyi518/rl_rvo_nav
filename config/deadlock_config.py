@@ -29,22 +29,34 @@ class DeadlockConfig:
         self.default_config = {
             # Deadlock Detection Parameters
             'DEADLOCK_DETECTION_ENABLED': True,
-            'TRIGGER_TYPE': 'SPEED_BUFFER',  # 'SPEED_BUFFER' or 'COMMON_POINT'
-            'SMALL_SPEED': 0.3,  # Velocity threshold for deadlock detection (increased from 0.1)
-            'VELOCITY_WINDOW_SIZE': 10,  # Number of time steps for velocity averaging (reduced from 50)
-            'MAPF_NUM': 2,  # Minimum number of agents to trigger PAR (reduced from 3)
-            'SIGHT_RADIUS': 1.5,  # Radius for detecting nearby agents (reduced from 2.0)
+            'TRIGGER_TYPE': 'HYBRID',  # 'SPEED_BUFFER', 'COMMON_POINT', or 'HYBRID'
+            'SMALL_SPEED': 0.3,  # Velocity threshold for deadlock detection
+            'VELOCITY_WINDOW_SIZE': 50,  # Number of time steps for velocity averaging (increased for stability)
+            'MAPF_NUM': 10,  # Minimum number of agents to trigger PAR (increased from 8 to match robot_number and reduce sensitivity)
+            'SIGHT_RADIUS': 5.0,  # Radius for detecting nearby agents (increased from 4.0 to reduce overlap with RL neighbor detection)
+            'EPISODE_START_DELAY': 50,  # Delay before starting deadlock detection (increased to reduce early detection)
+            
+            # Hybrid Deadlock Detection Parameters
+            'HYBRID_MODE': 'AND',  # 'AND' or 'OR' - how to combine speed buffer and common point triggers
+            'SPEED_BUFFER_WEIGHT': 0.6,  # Weight for speed buffer trigger in hybrid mode
+            'COMMON_POINT_WEIGHT': 0.4,  # Weight for common point trigger in hybrid mode
+            
+            # Enhanced Speed Buffer Parameters
+            'SPEED_BUFFER_AVG_THRESHOLD': 0.1,  # Average velocity threshold over time window
+            'SPEED_BUFFER_MAX_THRESHOLD': 0.2,  # Maximum velocity threshold over time window
+            'SPEED_BUFFER_MIN_HISTORY_RATIO': 0.8,  # Minimum ratio of history data required (0.8 = 80%)
             
             # PAR Algorithm Parameters
             'PAR_OFFSET': 2,  # Offset for expanding PAR region
-            'GRID_RESOLUTION': 1.0,  # Grid resolution for PAR environment
+            'GRID_RESOLUTION': 0.2,  # Grid resolution for PAR environment (reduced from 0.5 to improve precision)
             'POSITION_TOLERANCE': 0.1,  # Tolerance for position matching
             'VELOCITY_SCALE': 1.0,  # Scale factor for velocity calculation
             'MAX_VELOCITY': 1.5,  # Maximum velocity limit
             
             # Mode Switching Parameters
-            'MODE_SWITCH_DELAY': 10,  # Minimum time steps between mode switches
-            'PAR_COMPLETION_THRESHOLD': 0.9,  # Threshold for considering PAR complete
+            'MODE_SWITCH_DELAY': 20,  # Minimum time steps between mode switches (increased from 10 to reduce frequent switching)
+            'PAR_COMPLETION_THRESHOLD': 15,  # Steps threshold for considering PAR path complete (increased from 10 for stability)
+            'DEADLOCK_DETECTION_COOLDOWN': 100,  # Cooldown period between deadlock detections for the same agent (increased to reduce frequency)
             'GOAL_TOLERANCE': 0.5,  # Tolerance for reaching goal
             'NARROW_CORRIDOR_THRESHOLD': 4,  # Number of agents indicating narrow corridor
             'CONFINED_AREA_VELOCITY_THRESHOLD': 0.05,  # Velocity threshold for confined area
@@ -54,9 +66,9 @@ class DeadlockConfig:
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
             
             # Performance and Debug Parameters
-            'DEBUG_MODE': True,  # Enable debug output (changed from False)
-            'LOG_LEVEL': 'INFO',  # Logging level
-            'SAVE_STATISTICS': True,  # Save performance statistics
+            'DEBUG_MODE': False,  # Disable debug output to reduce console noise
+            'LOG_LEVEL': 'WARNING',  # Reduce logging level
+            'SAVE_STATISTICS': False,  # Disable statistics saving to reduce I/O
             'STATISTICS_INTERVAL': 100,  # Interval for saving statistics
             
             # Advanced Parameters
@@ -64,6 +76,10 @@ class DeadlockConfig:
             'MAX_PAR_PARTICIPANTS': 10,  # Maximum number of PAR participants
             'PAR_TIMEOUT': 500,  # Timeout for PAR execution
             'ENABLE_POSITION_SYNC': True,  # Enable position synchronization after PAR
+            
+            # MAPF solver parameters
+            'PAR_MAX_STEPS': 1000,  # Maximum steps for MAPF solver
+            'PAR_HEURISTIC_WEIGHT': 1.0,  # Heuristic weight for A* search
         }
         
         # Load configuration from file if provided
@@ -251,10 +267,39 @@ class DeadlockConfig:
         if self.get('GOAL_TOLERANCE', 0) <= 0:
             errors.append("GOAL_TOLERANCE must be positive")
         
+        # Check hybrid detection parameters
+        if self.get('TRIGGER_TYPE') == 'HYBRID':
+            hybrid_mode = self.get('HYBRID_MODE')
+            if hybrid_mode not in ['AND', 'OR']:
+                errors.append("HYBRID_MODE must be 'AND' or 'OR'")
+            
+            speed_buffer_weight = self.get('SPEED_BUFFER_WEIGHT', 0)
+            common_point_weight = self.get('COMMON_POINT_WEIGHT', 0)
+            if speed_buffer_weight < 0 or speed_buffer_weight > 1:
+                errors.append("SPEED_BUFFER_WEIGHT must be between 0 and 1")
+            if common_point_weight < 0 or common_point_weight > 1:
+                errors.append("COMMON_POINT_WEIGHT must be between 0 and 1")
+            if abs(speed_buffer_weight + common_point_weight - 1.0) > 0.01:
+                errors.append("SPEED_BUFFER_WEIGHT + COMMON_POINT_WEIGHT must sum to 1.0")
+        
+        # Check enhanced speed buffer parameters
+        speed_buffer_avg_threshold = self.get('SPEED_BUFFER_AVG_THRESHOLD', 0)
+        speed_buffer_max_threshold = self.get('SPEED_BUFFER_MAX_THRESHOLD', 0)
+        if speed_buffer_avg_threshold <= 0:
+            errors.append("SPEED_BUFFER_AVG_THRESHOLD must be positive")
+        if speed_buffer_max_threshold <= 0:
+            errors.append("SPEED_BUFFER_MAX_THRESHOLD must be positive")
+        if speed_buffer_avg_threshold >= speed_buffer_max_threshold:
+            errors.append("SPEED_BUFFER_AVG_THRESHOLD must be less than SPEED_BUFFER_MAX_THRESHOLD")
+        
+        speed_buffer_min_history_ratio = self.get('SPEED_BUFFER_MIN_HISTORY_RATIO', 0)
+        if speed_buffer_min_history_ratio <= 0 or speed_buffer_min_history_ratio > 1:
+            errors.append("SPEED_BUFFER_MIN_HISTORY_RATIO must be between 0 and 1")
+        
         # Check trigger type
         trigger_type = self.get('TRIGGER_TYPE')
-        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT']:
-            errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER' or 'COMMON_POINT'")
+        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT', 'HYBRID']:
+            errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER', 'COMMON_POINT', or 'HYBRID'")
         
         # Report errors
         if errors:

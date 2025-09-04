@@ -5,10 +5,12 @@ world:
 
 robots:
   robot_mode: 'diff'  # omni or diff
+  # robot_number: 10  # Number of robots
   radius_list: [0.2, 0.2]  # first one is the default radius under other init_mode
   vel_max: [1.5, 1.5]
   radius_exp: 0.1
   interval: 1 
   square: [0, 0, 9, 9]
   circular: [5, 5, 4]
+  # init_mode: 3  # Random initialization mode
 

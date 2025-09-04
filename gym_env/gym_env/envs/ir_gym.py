@@ -42,6 +42,7 @@ class ir_gym(env_base):
         self.state_manager = None
         self.par_executor = None
         self.deadlock_config = None
+        self.deadlock_logger = None
         
         # Initialize deadlock resolution modules if enabled
         if self.enable_deadlock_resolution:
@@ -201,6 +202,16 @@ class ir_gym(env_base):
         if self.enable_deadlock_resolution and hasattr(self, 'deadlock_detector') and self.deadlock_detector:
             self.deadlock_detector.reset_episode()
         
+        # Reset state manager for new episode
+        if self.enable_deadlock_resolution and hasattr(self, 'state_manager') and self.state_manager:
+            self.state_manager.reset_episode()
+        
+        # Reset step counter for logger
+        if hasattr(self, 'step_count'):
+            self.step_count = 0
+        else:
+            self.step_count = 0
+        
         ts = self.components['robots'].total_states()
         obs_list = list(map(lambda robot: self.observation(robot, ts[1], ts[2], ts[3]), self.robot_list))
 
@@ -250,9 +261,30 @@ class ir_gym(env_base):
             # Initialize PNR solver
             pnr_solver = PushAndRotate()
             
-            # Initialize deadlock resolution modules
+            # Initialize deadlock logger first
+            try:
+                from rl_rvo_nav.policy_test_with_deadlock.deadlock_logger import get_deadlock_logger
+                self.deadlock_logger = get_deadlock_logger()
+                print("Deadlock logger initialized successfully")
+            except Exception as e:
+                print(f"Warning: Could not initialize deadlock logger: {e}")
+                self.deadlock_logger = None
+            
+            # Initialize deadlock resolution modules with logger
             self.deadlock_detector = DeadlockDetector(self.deadlock_config.config)
-            self.par_coordinator = PARCoordinator(pnr_solver, self.deadlock_config.config)
+            # Set logger for deadlock detector
+            if hasattr(self.deadlock_detector, 'set_logger'):
+                self.deadlock_detector.set_logger(self.deadlock_logger)
+            elif hasattr(self.deadlock_detector, 'logger'):
+                self.deadlock_detector.logger = self.deadlock_logger
+            
+            self.par_coordinator = PARCoordinator(pnr_solver, self.deadlock_config.config, gym_env=self)
+            # Set logger for PAR coordinator
+            if hasattr(self.par_coordinator, 'set_logger'):
+                self.par_coordinator.set_logger(self.deadlock_logger)
+            elif hasattr(self.par_coordinator, 'logger'):
+                self.par_coordinator.logger = self.deadlock_logger
+            
             self.par_executor = PARExecutor(self.deadlock_config.config)
             self.state_manager = StateManager()
             self.mode_controller = ModeController(
@@ -297,10 +329,20 @@ class ir_gym(env_base):
         if not self.enable_deadlock_resolution:
             return self._step_pure_rl(action_list)
         
+        # Increment step counter
+        if hasattr(self, 'step_count'):
+            self.step_count += 1
+        else:
+            self.step_count = 1
+        
         # Get current states
         ts = self.components['robots'].total_states()
         agent_states = self._get_agent_states_dict(ts[0])
         neighbor_states = self._get_neighbor_states_dict(ts[1])
+        
+        # Log step start if logger is available
+        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+            self.deadlock_logger.log_step_start(self.step_count, agent_states, neighbor_states)
         
         # Process each agent
         modified_action_list = action_list.copy()
@@ -319,14 +361,63 @@ class ir_gym(env_base):
                         try:
                             par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
                             
-                            # Set PAR mode for all participants
-                            for participant_id in deadlock_participants:
-                                self.state_manager.set_par_mode(participant_id, par_solution)
+                            # Log PAR preparation with agent positions
+                            if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                                # Log agent positions when switching from RL to MAPF
+                                agent_positions = {}
+                                for participant_id in deadlock_participants:
+                                    if participant_id in agent_states:
+                                        agent_state = agent_states[participant_id]
+                                        if 'position' in agent_state:
+                                            agent_positions[participant_id] = agent_state['position']
+                                
+                                self.deadlock_logger.log_par_preparation(agent_id, deadlock_participants, par_solution)
+                                self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
+                                self.deadlock_logger.log_par_solution_paths(par_solution, deadlock_participants)
                             
-                            print(f"🔴 DEADLOCK DETECTED: Agent {agent_id} triggered deadlock resolution, switching {len(deadlock_participants)} agents to PAR mode")
-                            print(f"   Participants: {deadlock_participants}")
+                            # Set PAR mode for all participants and initialize PAR executor
+                            for participant_id in deadlock_participants:
+                                old_mode = self.get_current_mode(participant_id)
+                                self.state_manager.set_par_mode(participant_id, par_solution)
+                                
+                                # Initialize PAR executor with solution data
+                                if par_solution and hasattr(par_solution, 'agents_moves'):
+                                    # Set start and goal positions for the participant
+                                    agent_state = agent_states.get(participant_id, {})
+                                    if 'position' in agent_state:
+                                        start_pos = agent_state['position']
+                                        if len(start_pos) >= 2:
+                                            self.par_executor.set_agent_start_position(participant_id, (start_pos[0], start_pos[1]))
+                                    
+                                    # Set goal position (use original goal)
+                                    if 'goal' in agent_state and agent_state['goal'] is not None:
+                                        goal = agent_state['goal']
+                                        if isinstance(goal, list) and len(goal) >= 2:
+                                            if isinstance(goal[0], list) and len(goal[0]) > 0:
+                                                goal_x = goal[0][0]
+                                            else:
+                                                goal_x = goal[0]
+                                            if isinstance(goal[1], list) and len(goal[1]) > 0:
+                                                goal_y = goal[1][0]
+                                            else:
+                                                goal_y = goal[1]
+                                            self.par_executor.set_agent_goal_position(participant_id, (goal_x, goal_y))
+                                    
+                                    # Set path for the participant
+                                    path = self.par_executor.get_agent_path_from_solution(participant_id, par_solution)
+                                    if path:
+                                        self.par_executor.set_agent_path(participant_id, path)
+                                
+                                # Log mode switch
+                                if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                                    self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'par', f"Deadlock detected by agent {agent_id}")
+                            
+                            # print(f"🔴 DEADLOCK DETECTED: Agent {agent_id} triggered deadlock resolution, switching {len(deadlock_participants)} agents to PAR mode")
+                            # print(f"   Participants: {deadlock_participants}")
                         except Exception as e:
                             print(f"❌ PAR preparation failed for agent {agent_id}: {e}")
+                            if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                                self.deadlock_logger.log_error("PAR_PREPARATION", e, {"agent_id": agent_id, "participants": deadlock_participants})
                             # Continue with RL_RVO mode if PAR fails
             
             # Execute action based on current mode
@@ -335,15 +426,41 @@ class ir_gym(env_base):
                     par_action = self.par_executor.execute_par_step(agent_id, agent_states)
                     if par_action and 'action' in par_action:
                         modified_action_list[agent_id] = par_action['action']
+                        
+                        # Log PAR execution
+                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                            self.deadlock_logger.log_par_execution(agent_id, par_action['action'], 'executing')
                     
                     # Check if PAR is complete
                     if self.par_coordinator.is_par_complete(agent_id):
+                        old_mode = self.get_current_mode(agent_id)
                         self.state_manager.set_rl_rvo_mode(agent_id)
-                        print(f"✅ PAR COMPLETED: Agent {agent_id} finished PAR execution, switching back to RL_RVO")
+                        
+                        # Log agent positions when switching from MAPF back to RL
+                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                            agent_positions = {}
+                            for participant_id in self.deadlock_detector.get_deadlock_participants(agent_id, {}):
+                                if participant_id in agent_states:
+                                    agent_state = agent_states[participant_id]
+                                    if 'position' in agent_state:
+                                        agent_positions[participant_id] = agent_state['position']
+                            
+                            self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "PAR execution completed")
+                            self.deadlock_logger.log_par_completion(agent_id, 0)  # TODO: track actual steps
+                            self.deadlock_logger.log_mapf_to_rl_positions(agent_positions)
+                        
+                        # print(f"✅ PAR COMPLETED: Agent {agent_id} finished PAR execution, switching back to RL_RVO")
                 except Exception as e:
                     print(f"❌ PAR execution failed for agent {agent_id}: {e}")
+                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                        self.deadlock_logger.log_error("PAR_EXECUTION", e, {"agent_id": agent_id})
+                        self.deadlock_logger.log_par_execution(agent_id, None, 'failure')
+                    
                     # Fall back to RL_RVO mode
+                    old_mode = self.get_current_mode(agent_id)
                     self.state_manager.set_rl_rvo_mode(agent_id)
+                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                        self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "PAR execution failed")
         
         # Execute the modified actions using pure RL logic
         return self._step_pure_rl(modified_action_list)
@@ -365,10 +482,26 @@ class ir_gym(env_base):
         """Convert robot state list to dictionary format."""
         agent_states = {}
         for i, robot_state in enumerate(robot_state_list):
+            # Get goal position from robot
+            goal = None
+            if hasattr(self.robot_list[i], 'goal') and self.robot_list[i].goal is not None:
+                goal = self.robot_list[i].goal
+            elif hasattr(self.robot_list[i], 'target') and self.robot_list[i].target is not None:
+                goal = self.robot_list[i].target
+            elif hasattr(self.robot_list[i], 'destination') and self.robot_list[i].destination is not None:
+                goal = self.robot_list[i].destination
+            
+            # If no goal found, use a default goal (e.g., current position + offset)
+            if goal is None:
+                current_pos = robot_state[0:2]
+                # Create a simple goal: move 2 units in x direction
+                goal = [current_pos[0] + 2.0, current_pos[1]]
+                print(f"⚠️ Agent {i}: No goal found, using default goal: {goal}")
+            
             agent_states[i] = {
                 'position': robot_state[0:2],
                 'velocity': robot_state[2:4],
-                'goal': self.robot_list[i].goal if hasattr(self.robot_list[i], 'goal') else None
+                'goal': goal
             }
         return agent_states
     

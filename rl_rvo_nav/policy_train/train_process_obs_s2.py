@@ -90,9 +90,9 @@ par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, 
 
 # 解析参数 (使用默认值，适合Stage 2)
 args = parser.parse_args([
-    '--train_epoch', '400', 
+    '--train_epoch', '2000', 
     '--robot_number', '6', 
-    '--load_name', 'r4_mode7_stage1_4_0/r4_mode7_stage1_4_0_check_point_300.pt', 
+    '--load_name', 'r4_mode7_stage1_4_2/r4_mode7_stage1_4_2_check_point_350.pt', 
     '--con_train', 
     '--use_gpu'
 ])

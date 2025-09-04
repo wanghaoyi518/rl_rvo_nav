@@ -26,15 +26,15 @@ torch.backends.cudnn.benchmark = False
 parser = argparse.ArgumentParser(description='policy test for Stage 4 best model')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-# Stage 4 最佳模型: r4_mode7_stage3_10_0_300 (成功率55%)
-parser.add_argument('--model_name', default='r4_mode7_stage3_10_0/r4_mode7_stage3_10_0_300.pt')  #   policy_dict=True    
-parser.add_argument('--arg_name', default='r4_mode7_stage3_10_0/r4_mode7_stage3_10_0')
+# Stage 4 最佳模型
+parser.add_argument('--model_name', default='r4_mode7_stage4_10_1/r4_mode7_stage4_10_1_600.pt')  #   policy_dict=True    
+parser.add_argument('--arg_name', default='r4_mode7_stage4_10_1/r4_mode7_stage4_10_1')
 # Stage 4 配置文件
 parser.add_argument('--world_name', default='mode7_stage4_complex+.yaml')  # Stage 4配置文件
 parser.add_argument('--render', action='store_true')
 # Stage 4 使用10个机器人
 parser.add_argument('--robot_number', type=int, default='10')
-parser.add_argument('--num_episodes', type=int, default='10')
+parser.add_argument('--num_episodes', type=int, default='100')
 # Mode 7: random with distance constraint + random polygons
 parser.add_argument('--dis_mode', type=int, default='7')  # 7 for Mode 7
 parser.add_argument('--save', action='store_true')

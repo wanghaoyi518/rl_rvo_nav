@@ -374,7 +374,7 @@ class PushAndRotate:
                     next2 = agent_next_positions.get(id2)
                     if next1 is not None and next2 is not None:
                         if pos1 == next2 and pos2 == next1:
-                            debug_log(f"检测到Agent {id1} 和 Agent {id2} 发生交换位置型碰撞: {pos1} <-> {pos2}")
+                            # debug_log(f"检测到Agent {id1} 和 Agent {id2} 发生交换位置型碰撞: {pos1} <-> {pos2}")
                             return False
             # 交换位置冲突检测结束
 
@@ -382,11 +382,11 @@ class PushAndRotate:
                 # 按优先级选择下一个agent - 简化逻辑
                 cur_agent_id = min(not_finished)
             
-            debug_log(f"步骤 {steps}: 选择Agent {cur_agent_id}, not_finished={not_finished}")
+            # debug_log(f"步骤 {steps}: 选择Agent {cur_agent_id}, not_finished={not_finished}")
             
             cur_agent = actor_set.get_actor_by_id(cur_agent_id)
             if cur_agent_id not in not_finished:
-                debug_log(f"错误: Agent {cur_agent_id} 不在 not_finished 中!")
+                # debug_log(f"错误: Agent {cur_agent_id} 不在 not_finished 中!")
                 return False
             not_finished.remove(cur_agent_id)
             
@@ -397,7 +397,7 @@ class PushAndRotate:
                 Node(int(cur_agent.goal.x), int(cur_agent.goal.y)),
                 occupied_set
             )
-            debug_log(f"A*路径 (Agent {cur_agent_id}): {[ (n.i, n.j) for n in path ] if path else '无路径'}")
+            # debug_log(f"A*路径 (Agent {cur_agent_id}): {[ (n.i, n.j) for n in path ] if path else '无路径'}")
             if not path or len(path) < 2:
                 return False
             
@@ -485,10 +485,10 @@ class PushAndRotate:
                                 for oa in actor_set:
                                     if oa.current.x == goal_node.i and oa.current.y == goal_node.j:
                                         cur_agent_id = oa.id
-                                        debug_log(f"  重新选择Agent {cur_agent_id} (占用目标位置)")
+                                        # debug_log(f"  重新选择Agent {cur_agent_id} (占用目标位置)")
                                         if cur_agent_id not in not_finished:
                                             not_finished.add(cur_agent_id)
-                                            debug_log(f"  将Agent {cur_agent_id} 重新添加到 not_finished")
+                                            # debug_log(f"  将Agent {cur_agent_id} 重新添加到 not_finished")
                                         break
                                 break
                         break
@@ -961,7 +961,7 @@ class PushAndRotate:
             nodes_occupations[start_position].append(i)  # 存储agent索引，与C++一致
         
         # 处理每个移动（使用增量移动）
-        debug_log(f"处理 {len(self.agents_moves)} 个移动")
+        # debug_log(f"处理 {len(self.agents_moves)} 个移动")
         for move in self.agents_moves:
             # move现在是ActorMove对象，move.id是agent ID
             # 在C++中，move.id直接用作索引，所以agent ID必须从0开始连续
@@ -971,7 +971,7 @@ class PushAndRotate:
                 cur = agents_positions[agent_idx][-1]
                 # 计算新位置（增量移动）
                 new_pos = Node(cur.i + move.di, cur.j + move.dj)
-                debug_log(f"Agent {move.id} (idx={agent_idx}): ({cur.i},{cur.j}) + ({move.di},{move.dj}) = ({new_pos.i},{new_pos.j})")
+                # debug_log(f"Agent {move.id} (idx={agent_idx}): ({cur.i},{cur.j}) + ({move.di},{move.dj}) = ({new_pos.i},{new_pos.j})")
                 
                 if new_pos not in nodes_occupations:
                     nodes_occupations[new_pos] = []
@@ -981,11 +981,11 @@ class PushAndRotate:
                 if (nodes_occupations[new_pos] and 
                     nodes_occupations[new_pos][-1] == agent_idx):  # 比较agent索引
                     # 移除重复的位置
-                    debug_log(f"Agent {move.id} 目标位置已有相同agent，开始移除重复位置")
+                    # debug_log(f"Agent {move.id} 目标位置已有相同agent，开始移除重复位置")
                     while (agents_positions[agent_idx] and 
                            agents_positions[agent_idx][-1] != new_pos):
                         cur_back = agents_positions[agent_idx][-1]
-                        debug_log(f"移除位置: ({cur_back.i}, {cur_back.j})")
+                        # debug_log(f"移除位置: ({cur_back.i}, {cur_back.j})")
                         # 从occupation中移除
                         if cur_back in nodes_occupations:
                             last_ind = len(nodes_occupations[cur_back]) - 1
@@ -1000,16 +1000,19 @@ class PushAndRotate:
                     agents_positions[agent_idx].append(new_pos)
                     nodes_occupations[new_pos].append(agent_idx)  # 存储agent索引
             else:
-                debug_log(f"警告: Agent ID {move.id} 超出范围")
+                # debug_log(f"警告: Agent ID {move.id} 超出范围")
+                pass
         
         # 打印每个agent的位置序列
         for i, a in enumerate(actor_set):
-            debug_log(f"Agent {a.id} (idx={i}) 位置序列: {[(p.i, p.j) for p in agents_positions[i]]}")
+            # debug_log(f"Agent {a.id} (idx={i}) 位置序列: {[(p.i, p.j) for p in agents_positions[i]]}")
+            pass
         
         # 并行路径生成（严格按照C++逻辑）
-        debug_log(f"开始并行路径生成，agent_count={agent_count}")
+        # debug_log(f"开始并行路径生成，agent_count={agent_count}")
         for i, a in enumerate(actor_set):
-            debug_log(f"Agent {a.id} (idx={i}) 位置数量: {len(agents_positions[i])}")
+            # debug_log(f"Agent {a.id} (idx={i}) 位置数量: {len(agents_positions[i])}")
+            pass
         
         # 初始化路径
         self.agents_paths = [[] for _ in range(agent_count)]
@@ -1028,9 +1031,10 @@ class PushAndRotate:
         for pos in nodes_occupations:
             node_ind[pos] = 0
         
-        debug_log(f"并行路径生成开始时的nodes_occupations:")
+        # debug_log(f"并行路径生成开始时的nodes_occupations:")
         for pos, agents in nodes_occupations.items():
-            debug_log(f"  ({pos.i}, {pos.j}): {agents}")
+            # debug_log(f"  ({pos.i}, {pos.j}): {agents}")
+            pass
         
         while True:
             has_moved = [False] * agent_count
@@ -1039,7 +1043,7 @@ class PushAndRotate:
                     continue
                 
                 if len(agents_positions[i]) == 1:
-                    debug_log(f"Agent {actor_set[i].id} (idx={i}) 只有1个位置，标记为完成")
+                    # debug_log(f"Agent {actor_set[i].id} (idx={i}) 只有1个位置，标记为完成")
                     self.agents_paths[i].append(agents_positions[i][0])
                     finished[i] = True
                     continue
@@ -1063,43 +1067,43 @@ class PushAndRotate:
                         
                         last_ind = node_ind[next_node]
                         
-                        debug_log(f"Agent {actor_set[cur_agent].id} (idx={cur_agent}) 检查移动到 ({next_node.i}, {next_node.j})")
-                        debug_log(f"  node_ind[{next_node.i},{next_node.j}] = {last_ind}")
-                        debug_log(f"  nodes_occupations[{next_node.i},{next_node.j}] = {nodes_occupations[next_node]}")
+                        # debug_log(f"Agent {actor_set[cur_agent].id} (idx={cur_agent}) 检查移动到 ({next_node.i}, {next_node.j})")
+                        # debug_log(f"  node_ind[{next_node.i},{next_node.j}] = {last_ind}")
+                        # debug_log(f"  nodes_occupations[{next_node.i},{next_node.j}] = {nodes_occupations[next_node]}")
                         
                         if (last_ind < len(nodes_occupations[next_node]) and 
                             nodes_occupations[next_node][last_ind] == cur_agent):
-                            debug_log(f"  Agent {actor_set[cur_agent].id} 可以直接移动")
+                            # debug_log(f"  Agent {actor_set[cur_agent].id} 可以直接移动")
                             break
                         elif (len(nodes_occupations[next_node]) > 0 and
                               last_ind + 1 < len(nodes_occupations[next_node]) and 
                               nodes_occupations[next_node][last_ind + 1] == cur_agent):
                             next_agent = nodes_occupations[next_node][last_ind]
-                            debug_log(f"  Agent {actor_set[cur_agent].id} 需要等待 Agent {actor_set[next_agent].id} (idx={next_agent})")
+                            # debug_log(f"  Agent {actor_set[cur_agent].id} 需要等待 Agent {actor_set[next_agent].id} (idx={next_agent})")
                             
                             current_pos = agents_positions[next_agent][agent_ind[next_agent]]
                             if (finished[next_agent] or has_moved[next_agent] or next_agent < cur_agent or
                                 (current_pos.i != next_node.i or current_pos.j != next_node.j)):
-                                debug_log(f"  Agent {actor_set[next_agent].id} 无法移动，链式移动失败")
-                                debug_log(f"    finished[{next_agent}] = {finished[next_agent]}")
-                                debug_log(f"    has_moved[{next_agent}] = {has_moved[next_agent]}")
-                                debug_log(f"    next_agent < cur_agent: {next_agent} < {cur_agent} = {next_agent < cur_agent}")
-                                debug_log(f"    agents_positions[{next_agent}][{agent_ind[next_agent]}] = ({current_pos.i}, {current_pos.j})")
-                                debug_log(f"    next_node = ({next_node.i}, {next_node.j})")
+                                # debug_log(f"  Agent {actor_set[next_agent].id} 无法移动，链式移动失败")
+                                # debug_log(f"    finished[{next_agent}] = {finished[next_agent]}")
+                                # debug_log(f"    has_moved[{next_agent}] = {has_moved[next_agent]}")
+                                # debug_log(f"    next_agent < cur_agent: {next_agent} < {cur_agent} = {next_agent < cur_agent}")
+                                # debug_log(f"    agents_positions[{next_agent}][{agent_ind[next_agent]}] = ({current_pos.i}, {current_pos.j})")
+                                # debug_log(f"    next_node = ({next_node.i}, {next_node.j})")
                                 can_move = False
                                 break
                             
                             cur_agent = next_agent
                             if cur_agent == i:
-                                debug_log(f"  检测到循环，停止链式移动")
+                                # debug_log(f"  检测到循环，停止链式移动")
                                 break
                         else:
-                            debug_log(f"  Agent {actor_set[cur_agent].id} 无法移动")
+                            # debug_log(f"  Agent {actor_set[cur_agent].id} 无法移动")
                             can_move = False
                             break
                     
                     if can_move:
-                        debug_log(f"执行链式移动，路径: {path}")
+                        # debug_log(f"执行链式移动，路径: {path}")
                         for agent_id in path:
                             has_moved[agent_id] = True
                             # 严格按照C++逻辑：递增离开位置的node_ind
@@ -1110,10 +1114,10 @@ class PushAndRotate:
                             if agent_ind[agent_id] == len(agents_positions[agent_id]) - 1:
                                 finished[agent_id] = True
                     else:
-                        debug_log(f"Agent {actor_set[i].id} 无法移动，重复当前位置")
+                        # debug_log(f"Agent {actor_set[i].id} 无法移动，重复当前位置")
                         self.agents_paths[i].append(agents_positions[i][agent_ind[i]])
                 else:
-                    debug_log(f"Agent {actor_set[i].id} (idx={i}) 已经到达终点")
+                    # debug_log(f"Agent {actor_set[i].id} (idx={i}) 已经到达终点")
                     self.agents_paths[i].append(agents_positions[i][agent_ind[i]])
                     finished[i] = True
                 
@@ -1121,12 +1125,12 @@ class PushAndRotate:
             
             # 检查是否还有agent移动
             if not any(has_moved):
-                debug_log("没有agent移动，结束并行路径生成")
+                # debug_log("没有agent移动，结束并行路径生成")
                 break
         
         # 写入结果
         for i, a in enumerate(actor_set):
-            debug_log(f"Agent {a.id} 最终路径: {[(p.i, p.j) for p in self.agents_paths[i]]}")
+            # debug_log(f"Agent {a.id} 最终路径: {[(p.i, p.j) for p in self.agents_paths[i]]}")
             # 转换为Point对象
             point_path = [Point(p.i, p.j) for p in self.agents_paths[i]]
             self.result.add_path(a.id, point_path)

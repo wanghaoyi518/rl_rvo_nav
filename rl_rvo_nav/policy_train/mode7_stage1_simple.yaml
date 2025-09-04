@@ -20,10 +20,10 @@ obs_polygons_random:
   enable: True
   obs_num_range: [1, 2]           # 1-2个障碍物，较少
   generation_area: [2, 2, 8, 8]   # 较小的生成区域，避免边界复杂性
-  polygon_size_range: [0.6, 1.0]  # 小尺寸多边形
+  polygon_size_range: [0.4,0.6]  # 小尺寸多边形
   vertex_num_range: [3, 4]        # 只有三角形和四边形，简单形状
   min_obstacle_distance: 2.0      # 障碍物间较大距离
   min_agent_distance: 1.0         # agent到障碍物较大安全距离
-  obstacle_density: 0.06          # 低密度
+  obstacle_density: 0.1          # 低密度
   irregularity: 0.2               # 低不规则度，接近规则形状
   max_attempts: 100               # 生成尝试次数
