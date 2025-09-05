@@ -71,11 +71,11 @@ class DeadlockDetector:
         self.episode_counter = 0
         
         # Episode start delay for deadlock detection
-        self.episode_start_delay = config.get('EPISODE_START_DELAY', 50)
+        self.episode_start_delay = config.get('EPISODE_START_DELAY', 5)
         self.step_counter = 0
         
         # Cooldown mechanism for deadlock detection
-        self.deadlock_detection_cooldown = config.get('DEADLOCK_DETECTION_COOLDOWN', 50)
+        self.deadlock_detection_cooldown = config.get('DEADLOCK_DETECTION_COOLDOWN', 5)
         self.last_deadlock_detection = {}  # Track last detection time for each agent
         
         # Initialize logger
@@ -314,7 +314,8 @@ class DeadlockDetector:
         self.episode_counter += 1
         self.step_counter = 0  # Reset step counter for new episode
         if self.logger:
-            self.logger.logger.info(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
+            # self.logger.logger.info(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
+            pass
         else:
             # print(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
             pass

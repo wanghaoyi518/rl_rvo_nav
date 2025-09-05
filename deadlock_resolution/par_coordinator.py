@@ -817,14 +817,14 @@ class PARCoordinator:
                     x = float(goal[0][0]) if isinstance(goal[0], (list, np.ndarray)) else float(goal[0])
                     y = float(goal[1][0]) if isinstance(goal[1], (list, np.ndarray)) else float(goal[1])
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} extracted goal: ({x}, {y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} extracted goal: ({x}, {y})")
                     
                     min_x = min(min_x, x)
                     max_x = max(max_x, x)
                     min_y = min(min_y, y)
                     max_y = max(max_y, y)
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} goal updated bounds - min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} goal updated bounds - min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
         
         bounds = {
             'min_x': min_x,
@@ -833,7 +833,7 @@ class PARCoordinator:
             'max_y': max_y
         }
         
-        print(f"🔍 DEBUG: Final computed bounds: {bounds}")
+        # print(f"🔍 DEBUG: Final computed bounds: {bounds}")
         return bounds
     
     def reset(self):

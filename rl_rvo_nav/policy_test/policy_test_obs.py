@@ -27,14 +27,14 @@ parser = argparse.ArgumentParser(description='policy test for Stage 4 best model
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
 # Stage 4 最佳模型
-parser.add_argument('--model_name', default='r4_mode7_stage4_10_1/r4_mode7_stage4_10_1_600.pt')  #   policy_dict=True    
-parser.add_argument('--arg_name', default='r4_mode7_stage4_10_1/r4_mode7_stage4_10_1')
+parser.add_argument('--model_name', default='r4_mode7_stage3_8_4/r4_mode7_stage3_8_4_900.pt')  #   policy_dict=True    
+parser.add_argument('--arg_name', default='r4_mode7_stage3_8_4/r4_mode7_stage3_8_4')
 # Stage 4 配置文件
-parser.add_argument('--world_name', default='mode7_stage4_complex+.yaml')  # Stage 4配置文件
+parser.add_argument('--world_name', default='mode7_stage3_complex.yaml')  # Stage 4配置文件
 parser.add_argument('--render', action='store_true')
 # Stage 4 使用10个机器人
-parser.add_argument('--robot_number', type=int, default='10')
-parser.add_argument('--num_episodes', type=int, default='100')
+parser.add_argument('--robot_number', type=int, default='8')
+parser.add_argument('--num_episodes', type=int, default='10')
 # Mode 7: random with distance constraint + random polygons
 parser.add_argument('--dis_mode', type=int, default='7')  # 7 for Mode 7
 parser.add_argument('--save', action='store_true')
@@ -45,6 +45,12 @@ parser.add_argument('--policy_dict', action='store_true', default=False)
 parser.add_argument('--once', action='store_true')
 
 policy_args = parser.parse_args()
+
+# Validate num_episodes parameter
+if policy_args.num_episodes <= 0:
+    print(f"Error: num_episodes must be positive, got {policy_args.num_episodes}")
+    print("Setting num_episodes to 1 for testing...")
+    policy_args.num_episodes = 1
 
 cur_path = Path(__file__).parent.parent 
 

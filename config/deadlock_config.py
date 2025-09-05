@@ -30,14 +30,14 @@ class DeadlockConfig:
             # Deadlock Detection Parameters
             'DEADLOCK_DETECTION_ENABLED': True,
             'TRIGGER_TYPE': 'HYBRID',  # 'SPEED_BUFFER', 'COMMON_POINT', or 'HYBRID'
-            'SMALL_SPEED': 0.3,  # Velocity threshold for deadlock detection
-            'VELOCITY_WINDOW_SIZE': 50,  # Number of time steps for velocity averaging (increased for stability)
-            'MAPF_NUM': 10,  # Minimum number of agents to trigger PAR (increased from 8 to match robot_number and reduce sensitivity)
-            'SIGHT_RADIUS': 5.0,  # Radius for detecting nearby agents (increased from 4.0 to reduce overlap with RL neighbor detection)
-            'EPISODE_START_DELAY': 50,  # Delay before starting deadlock detection (increased to reduce early detection)
+            'SMALL_SPEED': 0.2,  # Velocity threshold for deadlock detection (reduced from 0.3 to 0.2 for more sensitive detection)
+            'VELOCITY_WINDOW_SIZE': 20,  # Number of time steps for velocity averaging (reduced from 50 to 20 for faster response)
+            'MAPF_NUM': 4,  # Minimum number of agents to trigger PAR (reduced from 10 to 4 to match 8 robots)
+            'SIGHT_RADIUS': 3.0,  # Radius for detecting nearby agents (reduced from 5.0 to 3.0 for more precise detection)
+            'EPISODE_START_DELAY': 5,  # Delay before starting deadlock detection (reduced from 50 to 5 for early detection)
             
             # Hybrid Deadlock Detection Parameters
-            'HYBRID_MODE': 'AND',  # 'AND' or 'OR' - how to combine speed buffer and common point triggers
+            'HYBRID_MODE': 'AND',  # 'AND' or 'OR' - how to combine speed buffer and common point triggers (changed to OR for less strict detection)
             'SPEED_BUFFER_WEIGHT': 0.6,  # Weight for speed buffer trigger in hybrid mode
             'COMMON_POINT_WEIGHT': 0.4,  # Weight for common point trigger in hybrid mode
             
@@ -56,7 +56,7 @@ class DeadlockConfig:
             # Mode Switching Parameters
             'MODE_SWITCH_DELAY': 20,  # Minimum time steps between mode switches (increased from 10 to reduce frequent switching)
             'PAR_COMPLETION_THRESHOLD': 15,  # Steps threshold for considering PAR path complete (increased from 10 for stability)
-            'DEADLOCK_DETECTION_COOLDOWN': 100,  # Cooldown period between deadlock detections for the same agent (increased to reduce frequency)
+            'DEADLOCK_DETECTION_COOLDOWN': 20,  # Reduced from 100 to 20 for more frequent detection attempts  # Cooldown period between deadlock detections for the same agent (increased to reduce frequency)
             'GOAL_TOLERANCE': 0.5,  # Tolerance for reaching goal
             'NARROW_CORRIDOR_THRESHOLD': 4,  # Number of agents indicating narrow corridor
             'CONFINED_AREA_VELOCITY_THRESHOLD': 0.05,  # Velocity threshold for confined area
@@ -78,8 +78,8 @@ class DeadlockConfig:
             'ENABLE_POSITION_SYNC': True,  # Enable position synchronization after PAR
             
             # MAPF solver parameters
-            'PAR_MAX_STEPS': 1000,  # Maximum steps for MAPF solver
-            'PAR_HEURISTIC_WEIGHT': 1.0,  # Heuristic weight for A* search
+            'PAR_MAX_STEPS': 2000,  # Maximum steps for MAPF solver
+            'PAR_HEURISTIC_WEIGHT': 0.6,  # Heuristic weight for A* search
         }
         
         # Load configuration from file if provided

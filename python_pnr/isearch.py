@@ -74,7 +74,8 @@ class ISearch:
             
             # 检查最大步数
             if self.sresult.numberofsteps > 1000:  # 最大1000步
-                print(f"⚠️ A* search exceeded max steps ({self.sresult.numberofsteps})")
+                # print(f"⚠️ A* search exceeded max steps ({self.sresult.numberofsteps})")
+                pass
                 break
             
             # 获取当前节点

@@ -498,4 +498,4 @@ class StateManager:
         Reset all agent states for a new episode.
         """
         self.agent_states.clear()
-        print("🔄 StateManager: Reset all agent states for new episode")
+        # print("🔄 StateManager: Reset all agent states for new episode")

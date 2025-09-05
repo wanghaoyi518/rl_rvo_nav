@@ -68,7 +68,7 @@ class PAREnvironment:
         
         # Build sub-map
         self.sub_map = self.build_sub_map()
-        print(f"🔍 DEBUG: Sub-map built: {self.sub_map.width} x {self.sub_map.height}")
+        # print(f"🔍 DEBUG: Sub-map built: {self.sub_map.width} x {self.sub_map.height}")
         
         # Build actor set
         self.actor_set = self.build_actor_set(agent_states)
@@ -153,8 +153,9 @@ class PAREnvironment:
                 self._add_obstacle_to_grid(sub_map, obstacle)
                 
         except Exception as e:
-            print(f"⚠️ Warning: Could not populate obstacles: {e}")
+            # print(f"⚠️ Warning: Could not populate obstacles: {e}")
             # Continue with free space if obstacle processing fails
+            pass
     
     def _add_obstacle_to_grid(self, sub_map: SubMap, obstacle):
         """Add a single obstacle to the grid."""
@@ -176,7 +177,8 @@ class PAREnvironment:
                 self._add_point_obstacle(sub_map, x, y)
                 
         except Exception as e:
-            print(f"⚠️ Warning: Could not process obstacle {obstacle}: {e}")
+            # print(f"⚠️ Warning: Could not process obstacle {obstacle}: {e}")
+            pass
     
     def _add_circular_obstacle(self, sub_map: SubMap, center_x: float, center_y: float, radius: float):
         """Add a circular obstacle to the grid."""
@@ -278,7 +280,7 @@ class PAREnvironment:
                 position = self.get_agent_position(agent_state)
                 goal = self.get_agent_goal(agent_state)
                 
-                print(f"🔍 DEBUG: Agent {agent_id} - Raw position: {position}, Raw goal: {goal}")
+                # print(f"🔍 DEBUG: Agent {agent_id} - Raw position: {position}, Raw goal: {goal}")
                 
                 if position is not None:
                     x, y = position
@@ -286,9 +288,9 @@ class PAREnvironment:
                     grid_x = round((x - self.min_x) / self.grid_resolution)
                     grid_y = round((y - self.min_y) / self.grid_resolution)
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} - Grid start: ({grid_x}, {grid_y})")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Start calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Start calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Grid start: ({grid_x}, {grid_y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Start calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Start calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
                     
                     # Create actor with proper start and goal positions
                     from python_pnr.node import Point
@@ -300,21 +302,21 @@ class PAREnvironment:
                         goal_grid_x = round((goal_x - self.min_x) / self.grid_resolution)
                         goal_grid_y = round((goal_y - self.min_y) / self.grid_resolution)
                         
-                        print(f"🔍 DEBUG: Agent {agent_id} - Grid goal: ({goal_grid_x}, {goal_grid_y})")
-                        print(f"🔍 DEBUG: Agent {agent_id} - Goal calculation: ({goal_x} - {self.min_x}) / {self.grid_resolution} = {goal_grid_x}")
-                        print(f"🔍 DEBUG: Agent {agent_id} - Goal calculation: ({goal_y} - {self.min_y}) / {self.grid_resolution} = {goal_grid_y}")
+                        # print(f"🔍 DEBUG: Agent {agent_id} - Grid goal: ({goal_grid_x}, {goal_grid_y})")
+                        # print(f"🔍 DEBUG: Agent {agent_id} - Goal calculation: ({goal_x} - {self.min_x}) / {self.grid_resolution} = {goal_grid_x}")
+                        # print(f"🔍 DEBUG: Agent {agent_id} - Goal calculation: ({goal_y} - {self.min_y}) / {self.grid_resolution} = {goal_grid_y}")
                         
                         # Ensure goal is within the sub-map bounds
                         goal_grid_x = max(0, min(goal_grid_x, self.sub_map.width - 1)) if self.sub_map else goal_grid_x
                         goal_grid_y = max(0, min(goal_grid_y, self.sub_map.height - 1)) if self.sub_map else goal_grid_y
                         
-                        print(f"🔍 DEBUG: Agent {agent_id} - Bounded grid goal: ({goal_grid_x}, {goal_grid_y})")
+                        # print(f"🔍 DEBUG: Agent {agent_id} - Bounded grid goal: ({goal_grid_x}, {goal_grid_y})")
                         
                         goal_point = Point(goal_grid_x, goal_grid_y)
                     else:
                         # Fallback: use start position as goal if no goal available
                         goal_point = Point(grid_x, grid_y)
-                        print(f"🔍 DEBUG: Agent {agent_id} - Using start as goal: ({grid_x}, {grid_y})")
+                        # print(f"🔍 DEBUG: Agent {agent_id} - Using start as goal: ({grid_x}, {grid_y})")
                     
                     # Calculate and log the distance between start and goal
                     continuous_start = (x, y)
@@ -323,13 +325,14 @@ class PAREnvironment:
                     
                     grid_distance = np.sqrt((goal_point.x - start_point.x)**2 + (goal_point.y - start_point.y)**2)
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} - Final: start=({start_point.x}, {start_point.y}), goal=({goal_point.x}, {goal_point.y})")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Continuous distance: {continuous_distance:.4f}m, Grid distance: {grid_distance} cells")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Grid resolution: {self.grid_resolution}m, Min distance threshold: {self.grid_resolution/2:.4f}m")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Final: start=({start_point.x}, {start_point.y}), goal=({goal_point.x}, {goal_point.y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Continuous distance: {continuous_distance:.4f}m, Grid distance: {grid_distance} cells")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Grid resolution: {self.grid_resolution}m, Min distance threshold: {self.grid_resolution/2:.4f}m")
                     
                     if continuous_distance < self.grid_resolution/2:
-                        print(f"⚠️  WARNING: Agent {agent_id} continuous distance ({continuous_distance:.4f}m) < grid_resolution/2 ({self.grid_resolution/2:.4f}m)")
-                        print(f"⚠️  This will cause start=goal in grid coordinates!")
+                        # print(f"⚠️  WARNING: Agent {agent_id} continuous distance ({continuous_distance:.4f}m) < grid_resolution/2 ({self.grid_resolution/2:.4f}m)")
+                        # print(f"⚠️  This will cause start=goal in grid coordinates!")
+                        pass
                     
                     actor = Actor(agent_id, start_point, goal_point)
                     actor_set.add_actor(actor)
@@ -350,15 +353,15 @@ class PAREnvironment:
         Returns:
             Dict[int, Tuple[int, int]]: Dictionary mapping agent IDs to start positions
         """
-        print(f"🔍 DEBUG: compute_start_positions called with {len(agent_states)} agents")
+        # print(f"🔍 DEBUG: compute_start_positions called with {len(agent_states)} agents")
         
         # Ensure boundaries are computed first
         if self.min_x == float('inf'):
-            print(f"🔍 DEBUG: Bounds not computed yet, calling compute_region_boundaries and expand_region")
+            # print(f"🔍 DEBUG: Bounds not computed yet, calling compute_region_boundaries and expand_region")
             self.compute_region_boundaries(agent_states)
             self.expand_region()
         
-        print(f"🔍 DEBUG: Current bounds - min_x: {self.min_x}, max_x: {self.max_x}, min_y: {self.min_y}, max_y: {self.max_y}")
+        # print(f"🔍 DEBUG: Current bounds - min_x: {self.min_x}, max_x: {self.max_x}, min_y: {self.min_y}, max_y: {self.max_y}")
         
         start_positions = {}
         
@@ -369,15 +372,15 @@ class PAREnvironment:
                 
                 if position is not None:
                     x, y = position
-                    print(f"🔍 DEBUG: Agent {agent_id} - Raw position: ({x}, {y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Raw position: ({x}, {y})")
                     
                     # Convert to grid coordinates with proper rounding
                     grid_x = round((x - self.min_x) / self.grid_resolution)
                     grid_y = round((y - self.min_y) / self.grid_resolution)
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} - Grid position: ({grid_x}, {grid_y})")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Grid position: ({grid_x}, {grid_y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
                     
                     start_positions[agent_id] = (grid_x, grid_y)
                 else:
@@ -397,15 +400,15 @@ class PAREnvironment:
         Returns:
             Dict[int, Tuple[int, int]]: Dictionary mapping agent IDs to goal positions
         """
-        print(f"🔍 DEBUG: compute_goal_positions called with {len(agent_states)} agents")
+        # print(f"🔍 DEBUG: compute_goal_positions called with {len(agent_states)} agents")
         
         # Ensure boundaries are computed first
         if self.min_x == float('inf'):
-            print(f"🔍 DEBUG: Bounds not computed yet, calling compute_region_boundaries and expand_region")
+            # print(f"🔍 DEBUG: Bounds not computed yet, calling compute_region_boundaries and expand_region")
             self.compute_region_boundaries(agent_states)
             self.expand_region()
         
-        print(f"🔍 DEBUG: Current bounds - min_x: {self.min_x}, max_x: {self.max_x}, min_y: {self.min_y}, max_y: {self.max_y}")
+        # print(f"🔍 DEBUG: Current bounds - min_x: {self.min_x}, max_x: {self.max_x}, min_y: {self.min_y}, max_y: {self.max_y}")
         
         goal_positions = {}
         
@@ -422,37 +425,37 @@ class PAREnvironment:
                     continuous_distance = np.sqrt((goal_x - pos_x)**2 + (goal_y - pos_y)**2)
                     
                     if continuous_distance < self.grid_resolution/2:
-                        print(f"🔍 DEBUG: Agent {agent_id} already at goal (distance: {continuous_distance:.4f}m), skipping from goal positions")
+                        # print(f"🔍 DEBUG: Agent {agent_id} already at goal (distance: {continuous_distance:.4f}m), skipping from goal positions")
                         continue
                 
                 if goal is not None:
                     x, y = goal
-                    print(f"🔍 DEBUG: Agent {agent_id} - Raw goal: ({x}, {y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Raw goal: ({x}, {y})")
                     
                     # Convert to grid coordinates with proper rounding
                     grid_x = round((x - self.min_x) / self.grid_resolution)
                     grid_y = round((y - self.min_y) / self.grid_resolution)
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} - Grid goal: ({grid_x}, {grid_y})")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
-                    print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Grid goal: ({grid_x}, {grid_y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({x} - {self.min_x}) / {self.grid_resolution} = {grid_x}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Calculation: ({y} - {self.min_y}) / {self.grid_resolution} = {grid_y}")
                     
                     # Ensure goal is within the sub-map bounds
                     grid_x = max(0, min(grid_x, self.sub_map.width - 1)) if self.sub_map else grid_x
                     grid_y = max(0, min(grid_y, self.sub_map.height - 1)) if self.sub_map else grid_y
                     
-                    print(f"🔍 DEBUG: Agent {agent_id} - Bounded grid goal: ({grid_x}, {grid_y})")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - Bounded grid goal: ({grid_x}, {grid_y})")
                     
                     goal_positions[agent_id] = (grid_x, grid_y)
                 else:
-                    print(f"🔍 DEBUG: Agent {agent_id} - No goal found in agent_state: {agent_state}")
-        
-        print(f"🔍 DEBUG: Final goal_positions: {goal_positions}")
+                    # print(f"🔍 DEBUG: Agent {agent_id} - No goal found in agent_state: {agent_state}")
+                    pass
+
         return goal_positions
     
     def get_agent_position(self, agent_state: Dict) -> Optional[Tuple[float, float]]:
         """
-        Extract agent position from agent state.
+        Extract agent position from agent state.    
         
         Args:
             agent_state: Agent state dictionary

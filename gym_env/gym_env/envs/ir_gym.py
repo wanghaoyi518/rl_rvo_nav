@@ -119,6 +119,10 @@ class ir_gym(env_base):
 
         obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, obs_line_list, action, **kwargs)
 
+        # If collision detected by RVO, call collision_check to record detailed collision information
+        if collision_flag and not robot.collision_flag:
+            robot.collision_check(self.components)
+
         radian = robot.state[2]
         cur_vel = np.squeeze(robot.vel_omni)
         radius = robot.radius_collision* np.ones(1,)

@@ -84,6 +84,9 @@ class post_train:
                     if self.inf_print: print('Successful, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                 else:
                     if self.inf_print: print('Fail, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
+                    
+                    # Print failure reasons
+                    self._print_failure_reasons()
     
                 ep_ret_list.append(ep_ret)
                 mean_speed_list.append(speed)
@@ -143,3 +146,34 @@ class post_train:
     
     def dis(self, p1, p2):
         return sqrt( (p2.py - p1.py)**2 + (p2.px - p1.px)**2 )
+    
+    def _print_failure_reasons(self):
+        """Print detailed failure reasons for failed episode"""
+        collision_robots = []
+        
+        # Collect collision information from all robots
+        for robot in self.env.ir_gym.robot_list:
+            if robot.collision_flag and robot.collision_info is not None:
+                collision_robots.append(robot.collision_info)
+        
+        if collision_robots:
+            print("  Failure reasons:")
+            for collision_info in collision_robots:
+                if collision_info['type'] == 'robot_robot':
+                    print(f"    Robot {collision_info['robot_id']} collided with Robot {collision_info['other_robot_id']}")
+                elif collision_info['type'] == 'robot_obstacle':
+                    robot_id = collision_info['robot_id']
+                    obstacle_type = collision_info['obstacle_type']
+                    if obstacle_type == 'circular':
+                        pos = collision_info['obstacle_position']
+                        print(f"    Robot {robot_id} collided with circular obstacle at ({pos[0]:.2f}, {pos[1]:.2f})")
+                    elif obstacle_type == 'map':
+                        print(f"    Robot {robot_id} collided with map obstacle")
+                    elif obstacle_type == 'line':
+                        pos = collision_info['obstacle_position']
+                        print(f"    Robot {robot_id} collided with line obstacle from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
+                    elif obstacle_type == 'polygon':
+                        pos = collision_info['obstacle_position']
+                        print(f"    Robot {robot_id} collided with polygon obstacle edge from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
+        else:
+            print("  No collision information available")

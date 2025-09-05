@@ -107,7 +107,7 @@ class DeadlockLogger:
             'episode_deadlock_count': 0  # Reset episode-level deadlock counter
         }
         
-        self.logger.info(f"🎬 EPISODE START: Episode {episode_num}, Agents: {num_agents}")
+        # self.logger.info(f"🎬 EPISODE START: Episode {episode_num}, Agents: {num_agents}")
         if config:
             self.logger.debug(f"📋 Episode config: {json.dumps(config, indent=2)}")
     
@@ -163,7 +163,8 @@ class DeadlockLogger:
         }
         self.episode_data['deadlock_events'].append(event)
         
-        self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
+        # self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
+        pass
         self.logger.debug(f"   Details: {json.dumps(serializable_details, indent=2)}")
     
     def log_deadlock_check(self, agent_id: int, velocity: float, threshold: float, neighbor_count: int):
@@ -184,13 +185,15 @@ class DeadlockLogger:
         }
         self.episode_data['mode_switches'].append(event)
         
-        self.logger.info(f"🔄 MODE SWITCH: Agent {agent_id}: {old_mode} → {new_mode}")
+        # self.logger.info(f"🔄 MODE SWITCH: Agent {agent_id}: {old_mode} → {new_mode}")
+        pass
         if reason:
             self.logger.debug(f"   Reason: {reason}")
     
     def log_par_preparation(self, agent_id: int, participants: List[int], par_solution: Dict):
         """Log PAR preparation event."""
-        self.logger.info(f"📋 PAR PREPARATION: Agent {agent_id}, Participants: {participants}")
+        # self.logger.info(f"📋 PAR PREPARATION: Agent {agent_id}, Participants: {participants}")
+        pass
         
         # Convert par_solution to serializable format
         try:
@@ -214,7 +217,8 @@ class DeadlockLogger:
         
         if status == 'success':
             self.stats['par_successes'] += 1
-            self.logger.info(f"✅ PAR EXECUTION: Agent {agent_id} executed successfully")
+            # self.logger.info(f"✅ PAR EXECUTION: Agent {agent_id} executed successfully")
+            pass
         elif status == 'failure':
             self.stats['par_failures'] += 1
             self.logger.error(f"❌ PAR EXECUTION: Agent {agent_id} failed")
@@ -223,23 +227,29 @@ class DeadlockLogger:
     
     def log_par_completion(self, agent_id: int, total_steps: int):
         """Log PAR completion event."""
-        self.logger.info(f"🎉 PAR COMPLETED: Agent {agent_id} finished in {total_steps} steps")
+        # self.logger.info(f"🎉 PAR COMPLETED: Agent {agent_id} finished in {total_steps} steps")
+        pass
     
     def log_rl_to_mapf_positions(self, agent_positions: Dict[int, List[float]]):
         """Log agent positions when switching from RL to MAPF mode."""
-        self.logger.info(f"📍 RL→MAPF POSITIONS: Agent positions when entering deadlock resolution")
+        # self.logger.info(f"📍 RL→MAPF POSITIONS: Agent positions when entering deadlock resolution")
+        pass
         for agent_id, position in agent_positions.items():
-            self.logger.info(f"   Agent {agent_id}: position={position}")
+            # self.logger.info(f"   Agent {agent_id}: position={position}")
+            pass
     
     def log_mapf_to_rl_positions(self, agent_positions: Dict[int, List[float]]):
         """Log agent positions when switching from MAPF back to RL mode."""
-        self.logger.info(f"📍 MAPF→RL POSITIONS: Agent positions when exiting deadlock resolution")
+        # self.logger.info(f"📍 MAPF→RL POSITIONS: Agent positions when exiting deadlock resolution")
+        pass
         for agent_id, position in agent_positions.items():
-            self.logger.info(f"   Agent {agent_id}: position={position}")
+            # self.logger.info(f"   Agent {agent_id}: position={position}")
+            pass
     
     def log_par_solution_paths(self, par_solution, participants: List[int]):
         """Log PAR solution paths for each participant."""
-        self.logger.info(f"🗺️ PAR SOLUTION PATHS: Generated paths for {len(participants)} agents")
+        # self.logger.info(f"🗺️ PAR SOLUTION PATHS: Generated paths for {len(participants)} agents")
+        pass
         
         if par_solution and hasattr(par_solution, 'agents_moves'):
             # Group moves by agent
@@ -254,11 +264,14 @@ class DeadlockLogger:
                 if agent_id in agent_moves:
                     moves = agent_moves[agent_id]
                     path_str = " → ".join([f"({di}, {dj})" for di, dj in moves])
-                    self.logger.info(f"   Agent {agent_id}: {path_str}")
+                    # self.logger.info(f"   Agent {agent_id}: {path_str}")
+                    pass
                 else:
-                    self.logger.info(f"   Agent {agent_id}: No path generated")
+                    # self.logger.info(f"   Agent {agent_id}: No path generated")
+                    pass
         else:
-            self.logger.warning(f"   No valid PAR solution available")
+            # self.logger.warning(f"   No valid PAR solution available")
+            pass
     
     def log_error(self, component: str, error: Exception, context: Dict = None):
         """Log error events."""
@@ -268,7 +281,8 @@ class DeadlockLogger:
     
     def log_performance_metrics(self, metrics: Dict):
         """Log performance metrics."""
-        self.logger.info(f"📊 PERFORMANCE: {json.dumps(metrics, indent=2)}")
+        # self.logger.info(f"📊 PERFORMANCE: {json.dumps(metrics, indent=2)}")
+        pass
     
     def log_episode_summary(self):
         """Log episode summary."""
@@ -284,7 +298,7 @@ class DeadlockLogger:
             'success_rate': self.stats['par_successes'] / max(self.stats['par_executions'], 1)
         }
         
-        self.logger.info(f"📈 EPISODE SUMMARY: {json.dumps(summary, indent=2)}")
+        # self.logger.info(f"📈 EPISODE SUMMARY: {json.dumps(summary, indent=2)}")
         
         # Log detailed episode data
         try:
@@ -315,29 +329,35 @@ class DeadlockLogger:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(serializable_data, f, indent=2, ensure_ascii=False)
         
-        self.logger.info(f"💾 Episode data saved to: {filepath}")
+        # self.logger.info(f"💾 Episode data saved to: {filepath}")
         return filepath
     
     def log_par_solver_details(self, par_solver_input: Dict, par_solution, participants: List[int]):
         """Log detailed PAR solver information including initialization, trajectories, and final positions."""
         # Log PAR solver initialization details
-        self.logger.info(f"🔧 PAR SOLVER DETAILS: Detailed execution information")
+        # self.logger.info(f"🔧 PAR SOLVER DETAILS: Detailed execution information")
+        pass
         
         # Log initialization positions
         if 'start_positions' in par_solver_input:
-            self.logger.info(f"📍 PAR INITIALIZATION: Agent positions at start of PAR execution")
+            # self.logger.info(f"📍 PAR INITIALIZATION: Agent positions at start of PAR execution")
+            pass
             for agent_id, pos in par_solver_input['start_positions'].items():
-                self.logger.info(f"   Agent {agent_id}: start_position={pos}")
+                # self.logger.info(f"   Agent {agent_id}: start_position={pos}")
+                pass
         
         # Log goal positions
         if 'goal_positions' in par_solver_input:
-            self.logger.info(f"🎯 PAR GOALS: Agent goal positions for PAR execution")
+            # self.logger.info(f"🎯 PAR GOALS: Agent goal positions for PAR execution")
+            pass
             for agent_id, pos in par_solver_input['goal_positions'].items():
-                self.logger.info(f"   Agent {agent_id}: goal_position={pos}")
+                # self.logger.info(f"   Agent {agent_id}: goal_position={pos}")
+                pass
         
         # Log computed trajectories
         if par_solution and hasattr(par_solution, 'agents_moves'):
-            self.logger.info(f"🛤️ PAR TRAJECTORIES: Computed movement paths for each agent")
+            # self.logger.info(f"🛤️ PAR TRAJECTORIES: Computed movement paths for each agent")
+            pass
             
             # Group moves by agent
             agent_moves = {}
@@ -361,9 +381,11 @@ class DeadlockLogger:
                         current_pos = new_pos
                     
                     path_str = " → ".join([f"({x}, {y})" for x, y in path])
-                    self.logger.info(f"   Agent {agent_id}: {path_str}")
+                    # self.logger.info(f"   Agent {agent_id}: {path_str}")
+                    pass
                 else:
-                    self.logger.info(f"   Agent {agent_id}: No trajectory computed")
+                    # self.logger.info(f"   Agent {agent_id}: No trajectory computed")
+                    pass
         
         # Store detailed information in episode data for later analysis
         par_details = {
@@ -423,9 +445,10 @@ class DeadlockLogger:
     
     def log_par_final_positions(self, agent_final_positions: Dict[int, List[float]]):
         """Log final agent positions after PAR execution completion."""
-        self.logger.info(f"🏁 PAR FINAL POSITIONS: Agent positions after PAR execution completion")
+        # self.logger.info(f"🏁 PAR FINAL POSITIONS: Agent positions after PAR execution completion")
         for agent_id, position in agent_final_positions.items():
-            self.logger.info(f"   Agent {agent_id}: final_position={position}")
+            # self.logger.info(f"   Agent {agent_id}: final_position={position}")
+            pass
         
         # Store final positions in episode data
         if 'par_final_positions' not in self.episode_data:
