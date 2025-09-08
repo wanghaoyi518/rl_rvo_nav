@@ -7,7 +7,7 @@ robots:
   robot_mode: 'diff'
   robot_init_mode: 7  # Mode 7: random with distance constraint + random polygons
   robot_number: 4
-  max_start_goal_distance: 5.0
+  max_start_goal_distance: 1.2
   radius_list: [0.2, 0.2]
   vel_max: [1.5, 1.5]
   radius_exp: 0.1

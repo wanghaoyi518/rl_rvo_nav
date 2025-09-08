@@ -27,23 +27,33 @@ class DeadlockLogger:
     - Episode and step-level logging
     """
     
-    def __init__(self, log_dir: str = "deadlock_logs", log_level: str = "DEBUG"):
+    def __init__(self, log_dir: str = None, log_level: str = "DEBUG"):
         """
         Initialize the deadlock logger.
         
         Args:
-            log_dir: Directory to store log files
+            log_dir: Directory to store log files. If None, uses fixed path.
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         """
-        self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(exist_ok=True)
+        if log_dir is None:
+            # Use fixed absolute path to ensure consistent log location
+            log_dir = "/home/haoyiwang/Desktop/RL_RVO/rl_rvo_nav/rl_rvo_nav/policy_test_with_deadlock/deadlock_logs"
         
-        # Create timestamp-based log file name
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = self.log_dir / f"deadlock_debug_{timestamp}.log"
+        # Create a per-run timestamped subdirectory under the base log directory
+        base_log_dir = Path(log_dir)
+        base_log_dir.mkdir(exist_ok=True)
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_log_dir = base_log_dir / run_timestamp
+        run_log_dir.mkdir(exist_ok=True)
+        
+        # Point logger directory to the per-run subdirectory so all artifacts go inside it
+        self.log_dir = run_log_dir
+        
+        # Create timestamp-based log file name inside the run directory
+        self.log_file = self.log_dir / f"deadlock_debug_{run_timestamp}.log"
         
         # Setup logging
-        self.logger = logging.getLogger(f"deadlock_debug_{timestamp}")
+        self.logger = logging.getLogger(f"deadlock_debug_{run_timestamp}")
         self.logger.setLevel(getattr(logging, log_level.upper()))
         
         # Clear any existing handlers
@@ -163,8 +173,7 @@ class DeadlockLogger:
         }
         self.episode_data['deadlock_events'].append(event)
         
-        # self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
-        pass
+        self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
         self.logger.debug(f"   Details: {json.dumps(serializable_details, indent=2)}")
     
     def log_deadlock_check(self, agent_id: int, velocity: float, threshold: float, neighbor_count: int):
@@ -481,7 +490,7 @@ class DeadlockLogger:
 _deadlock_logger = None
 
 
-def get_deadlock_logger(log_dir: str = "deadlock_logs", log_level: str = "DEBUG") -> DeadlockLogger:
+def get_deadlock_logger(log_dir: str = None, log_level: str = "DEBUG") -> DeadlockLogger:
     """Get or create global deadlock logger instance."""
     global _deadlock_logger
     if _deadlock_logger is None:

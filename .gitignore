@@ -133,3 +133,6 @@ model_save/
 figure/
 
 *.txt
+
+# Deadlock logs
+rl_rvo_nav/policy_test_with_deadlock/deadlock_logs/

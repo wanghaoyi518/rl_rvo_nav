@@ -339,6 +339,10 @@ class ir_gym(env_base):
         else:
             self.step_count = 1
         
+        # Increment deadlock detector step counter (once per step, not per agent)
+        if hasattr(self, 'deadlock_detector') and self.deadlock_detector:
+            self.deadlock_detector.step_counter = self.step_count
+        
         # Get current states
         ts = self.components['robots'].total_states()
         agent_states = self._get_agent_states_dict(ts[0])

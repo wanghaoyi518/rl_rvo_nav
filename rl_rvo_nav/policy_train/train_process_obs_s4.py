@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description='Mode 7 Stage 3 Curriculum Learning
 # 环境参数组
 par_env = parser.add_argument_group('par env', 'environment parameters') 
 par_env.add_argument('--env_name', default='mrnav-v1')
-par_env.add_argument('--world_path', default='mode7_stage3_complex.yaml')  # Stage 3配置
+par_env.add_argument('--world_path', default='mode7_stage4_complex+.yaml')  # Stage 3配置
 par_env.add_argument('--robot_number', type=int, default=4)
 par_env.add_argument('--init_mode', default=7)  # Mode 7: random with distance constraint + random polygons
 par_env.add_argument('--reset_mode', default=7)  # Mode 7 reset
@@ -75,9 +75,9 @@ par_train.add_argument('--save_freq', default=50)
 par_train.add_argument('--save_figure', default=False)
 par_train.add_argument('--figure_save_path', default='figure')
 par_train.add_argument('--save_path', default=str(cur_path / 'model_save') + '/')
-par_train.add_argument('--save_name', default='r4_mode7_stage4_')  # Stage 3模型命名
+par_train.add_argument('--save_name', default='r4_mode7_stage4_')  
 par_train.add_argument('--load_path', default=str(cur_path / 'model_save')+ '/')
-par_train.add_argument('--load_name', default='r4_mode7_stage3_8_0/r4_mode7_stage3_8_0_check_point_500.pt')  # 从stage2模型开始
+par_train.add_argument('--load_name', default='r4_mode7_stage3_8_0/r4_mode7_stage3_8_0_check_point_500.pt')  
 par_train.add_argument('--save_result', type=bool, default=True)
 par_train.add_argument('--lr_decay_epoch', type=int, default=1000)
 par_train.add_argument('--max_update_num', type=int, default=10)
@@ -88,11 +88,11 @@ par_curriculum.add_argument('--curriculum_stage', default=3, type=int, help='Cur
 par_curriculum.add_argument('--curriculum_auto', action='store_true', help='Enable automatic curriculum progression')
 par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, help='Performance threshold for stage advancement')
 
-# 解析参数 (使用默认值，适合Stage 3)
+# 解析参数 (使用默认值，适合Stage 4)
 args = parser.parse_args([
-    '--train_epoch', '800', 
+    '--train_epoch', '1000', 
     '--robot_number', '10', 
-    '--load_name', 'r4_mode7_stage3_8_2/r4_mode7_stage3_8_2_check_point_200.pt', 
+    '--load_name', 'r4_mode7_stage3_8_5/r4_mode7_stage3_8_5_check_point_250.pt', 
     '--con_train', 
     '--use_gpu'
 ])
@@ -176,10 +176,10 @@ print(f"📁 超参数已保存到: {model_abs_path + model_name}")
 print(f"📁 配置文件已保存到: {model_abs_path + model_name + '_world.yaml'}")
 
 # 运行训练循环
-print("\n🚀 开始Stage 3训练...")
+print("\n🚀 开始Stage 4训练...")
 ppo.training_loop()
 
-print(f"\n🎉 Stage 3训练完成！")
+print(f"\n🎉 Stage 4训练完成！")
 print(f"📁 最终模型保存在: {model_abs_path}")
 print(f"📊 训练结果保存在: {model_abs_path + 'results.txt'}")
 print(f"🏆 课程学习完成！最终模型可用于实际应用")

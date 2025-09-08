@@ -7,7 +7,7 @@ robots:
   robot_mode: 'diff'
   robot_init_mode: 7  # Mode 7: random with distance constraint + random polygons
   robot_number: 8
-  max_start_goal_distance: 5.0
+  max_start_goal_distance: 1.2
   radius_list: [0.2, 0.2]
   vel_max: [1.5, 1.5]
   radius_exp: 0.1
@@ -19,8 +19,8 @@ robots:
 obs_polygons_random:
   enable: True
   obs_num_range: [3, 5]           # 3-6个障碍物，最多数量
-  generation_area: [1, 1, 9, 9]   # 完整生成区域
-  polygon_size_range: [1.0, 1.4]  # 大尺寸多边形
+  generation_area: [1.2, 1.2, 8.8, 8.8]   # 完整生成区域
+  polygon_size_range: [1.0, 1.2]  # 大尺寸多边形
   vertex_num_range: [4, 6]        # 4-6边形，复杂形状
   min_obstacle_distance: 1.0      # 标准障碍物间距离
   min_agent_distance: 0.6         # 标准安全距离

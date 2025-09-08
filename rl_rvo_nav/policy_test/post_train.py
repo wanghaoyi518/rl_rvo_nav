@@ -4,7 +4,8 @@ from pathlib import Path
 import platform
 from rl_rvo_nav.policy.policy_rnn_ac import rnn_ac
 from math import pi, sin, cos, sqrt
-import time 
+import time
+from rl_rvo_nav.test_logger import TestLogger 
 
 class post_train:
     def __init__(self, env, num_episodes=100, max_ep_len=150, acceler_vel = 1.0, reset_mode=3, render=True, save=False, neighbor_region=4, neighbor_num=5, args=None, **kwargs):
@@ -29,6 +30,10 @@ class post_train:
         self.nr = neighbor_region
         self.nm = neighbor_num
         self.args = args
+        
+        # Initialize test logger
+        self.test_logger = TestLogger(test_type="test")
+        self.test_logger.set_environment(env)
 
     def policy_test(self, policy_type='drl', policy_path=None, policy_name='policy', result_path=None, result_name='/result.txt', figure_save_path=None, ani_save_path=None, policy_dict=False, once=False):
         
@@ -41,7 +46,21 @@ class post_train:
         print('Policy Test Start !')
 
         figure_id = 0
+        episode_started = False
+        
         while n < self.num_episodes:
+            
+            # Start logging episode only once per episode
+            if not episode_started:
+                episode_config = {
+                    'policy_name': policy_name,
+                    'policy_type': policy_type,
+                    'reset_mode': self.reset_mode,
+                    'max_ep_len': self.max_ep_len,
+                    'render': self.render
+                }
+                self.test_logger.start_episode(n, self.robot_number, episode_config)
+                episode_started = True
 
             # if n == 1:
             #     self.show_traj = True
@@ -68,6 +87,16 @@ class post_train:
 
             o, r, d, info = self.env.step_ir(abs_action_list, vel_type = 'omni')
 
+            # Log step data
+            robot_positions = self.test_logger.get_robot_positions_from_env(self.env)
+            robot_velocities = self.test_logger.get_robot_velocities_from_env(self.env)
+            step_info = {
+                'reward': float(r[0]),
+                'done': bool(np.max(d)),
+                'info': info.tolist() if hasattr(info, 'tolist') else info
+            }
+            self.test_logger.log_step(robot_positions, robot_velocities, step_info)
+
             robot_speed_list = [np.linalg.norm(robot.vel_omni) for robot in self.env.ir_gym.robot_list]
             avg_speed = np.average(robot_speed_list)
             speed_list.append(avg_speed)
@@ -79,14 +108,28 @@ class post_train:
             if np.max(d) or (ep_len == self.max_ep_len) or np.min(info):
                 speed = np.mean(speed_list)
                 figure_id = 0
-                if np.min(info):
+                
+                # Determine episode success and failure reason
+                episode_success = bool(np.min(info))
+                failure_reason = None
+                
+                if episode_success:
                     ep_len_list.append(ep_len)
                     if self.inf_print: print('Successful, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                 else:
                     if self.inf_print: print('Fail, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                     
-                    # Print failure reasons
+                    # Print failure reasons and collect for logging
+                    failure_reason = self._get_failure_reasons()
                     self._print_failure_reasons()
+                
+                # End episode logging
+                self.test_logger.end_episode(
+                    success=episode_success,
+                    episode_reward=ep_ret,
+                    episode_length=ep_len,
+                    failure_reason=failure_reason
+                )
     
                 ep_ret_list.append(ep_ret)
                 mean_speed_list.append(speed)
@@ -95,6 +138,7 @@ class post_train:
                 o, r, d, ep_ret, ep_len = self.env.reset(mode=self.reset_mode), 0, False, 0, 0
 
                 n += 1
+                episode_started = False  # Reset for next episode
 
                 if np.min(info):
                     sn+=1
@@ -120,6 +164,9 @@ class post_train:
         f.close() 
         
         print( 'policy_name: '+ policy_name, ' successful rate: {:.2%}'.format(sn/self.num_episodes), "average EpLen:", mean_len, 'std length', std_len, 'average speed:', average_speed, 'std speed', std_speed)
+        
+        # Save session summary
+        self.test_logger.save_session_summary()
 
 
     def load_policy(self, filename, std_factor=1, policy_dict=False):
@@ -147,8 +194,8 @@ class post_train:
     def dis(self, p1, p2):
         return sqrt( (p2.py - p1.py)**2 + (p2.px - p1.px)**2 )
     
-    def _print_failure_reasons(self):
-        """Print detailed failure reasons for failed episode"""
+    def _get_failure_reasons(self):
+        """Get detailed failure reasons for failed episode as structured data"""
         collision_robots = []
         
         # Collect collision information from all robots
@@ -157,23 +204,53 @@ class post_train:
                 collision_robots.append(robot.collision_info)
         
         if collision_robots:
-            print("  Failure reasons:")
+            failure_reasons = []
             for collision_info in collision_robots:
                 if collision_info['type'] == 'robot_robot':
-                    print(f"    Robot {collision_info['robot_id']} collided with Robot {collision_info['other_robot_id']}")
+                    failure_reasons.append({
+                        'type': 'robot_robot',
+                        'robot_id': collision_info['robot_id'],
+                        'other_robot_id': collision_info['other_robot_id']
+                    })
                 elif collision_info['type'] == 'robot_obstacle':
                     robot_id = collision_info['robot_id']
                     obstacle_type = collision_info['obstacle_type']
+                    reason = {
+                        'type': 'robot_obstacle',
+                        'robot_id': robot_id,
+                        'obstacle_type': obstacle_type
+                    }
+                    if obstacle_type in ['circular', 'line', 'polygon']:
+                        reason['obstacle_position'] = collision_info['obstacle_position']
+                    failure_reasons.append(reason)
+            return failure_reasons
+        else:
+            return [{'type': 'timeout', 'reason': 'Episode reached maximum length'}]
+    
+    def _print_failure_reasons(self):
+        """Print detailed failure reasons for failed episode"""
+        failure_reasons = self._get_failure_reasons()
+        
+        if failure_reasons:
+            print("  Failure reasons:")
+            for reason in failure_reasons:
+                if reason['type'] == 'robot_robot':
+                    print(f"    Robot {reason['robot_id']} collided with Robot {reason['other_robot_id']}")
+                elif reason['type'] == 'robot_obstacle':
+                    robot_id = reason['robot_id']
+                    obstacle_type = reason['obstacle_type']
                     if obstacle_type == 'circular':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with circular obstacle at ({pos[0]:.2f}, {pos[1]:.2f})")
                     elif obstacle_type == 'map':
                         print(f"    Robot {robot_id} collided with map obstacle")
                     elif obstacle_type == 'line':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with line obstacle from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
                     elif obstacle_type == 'polygon':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with polygon obstacle edge from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
+                elif reason['type'] == 'timeout':
+                    print(f"    {reason['reason']}")
         else:
             print("  No collision information available")

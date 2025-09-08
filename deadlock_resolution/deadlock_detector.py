@@ -61,6 +61,16 @@ class DeadlockDetector:
         self.speed_buffer_max_threshold = config.get('SPEED_BUFFER_MAX_THRESHOLD', 0.2)
         self.speed_buffer_min_history_ratio = config.get('SPEED_BUFFER_MIN_HISTORY_RATIO', 0.8)
         
+        # Collision prevention parameters
+        self.collision_prevention_enabled = config.get('COLLISION_PREVENTION_ENABLED', True)
+        self.collision_warning_distance = config.get('COLLISION_WARNING_DISTANCE', 1.2)
+        self.collision_warning_agents = config.get('COLLISION_WARNING_AGENTS', 2)
+        
+        # Immediate speed detection parameters
+        self.immediate_speed_detection_enabled = config.get('IMMEDIATE_SPEED_DETECTION_ENABLED', True)
+        self.relative_speed_threshold = config.get('RELATIVE_SPEED_THRESHOLD', 1.0)
+        self.immediate_collision_distance = config.get('IMMEDIATE_COLLISION_DISTANCE', 0.8)
+        
         # Velocity history for each agent
         self.velocity_history = defaultdict(list)
         
@@ -111,8 +121,8 @@ class DeadlockDetector:
         if not self.deadlock_detection_enabled:
             return False
         
-        # Increment step counter
-        self.step_counter += 1
+        # Note: step_counter is incremented externally by the gym environment
+        # This ensures it's incremented once per step, not once per agent
         
         # Check episode start delay - don't detect deadlock too early
         if self.step_counter < self.episode_start_delay:
@@ -311,6 +321,7 @@ class DeadlockDetector:
     def reset_episode(self):
         """Reset velocity history for new episode."""
         self.velocity_history.clear()
+        self.last_deadlock_detection.clear()  # Reset cooldown state for new episode
         self.episode_counter += 1
         self.step_counter = 0  # Reset step counter for new episode
         if self.logger:
@@ -458,17 +469,153 @@ class DeadlockDetector:
         # Check common point trigger
         common_point_result = self.check_common_point_trigger(agent_id, agent_states, neighbor_states)
         
+        # Check collision prevention trigger
+        collision_prevention_result = self.check_collision_prevention_trigger(agent_id, agent_states, neighbor_states)
+        
+        # Check immediate speed trigger
+        immediate_speed_result = self.check_immediate_speed_trigger(agent_id, agent_states, neighbor_states)
+        
         # Combine results based on hybrid mode
         if self.hybrid_mode == 'AND':
-            result = speed_buffer_result and common_point_result
+            result = speed_buffer_result and common_point_result and collision_prevention_result and immediate_speed_result
             if self.logger:
-                self.logger.logger.debug(f"🔍 HYBRID AND: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Result: {result}")
+                self.logger.logger.debug(f"🔍 HYBRID AND: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Collision prevention: {collision_prevention_result}, Immediate speed: {immediate_speed_result}, Result: {result}")
         else:  # OR mode
-            result = speed_buffer_result or common_point_result
+            result = speed_buffer_result or common_point_result or collision_prevention_result or immediate_speed_result
             if self.logger:
-                self.logger.logger.debug(f"🔍 HYBRID OR: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Result: {result}")
+                self.logger.logger.debug(f"🔍 HYBRID OR: Speed buffer: {speed_buffer_result}, Common point: {common_point_result}, Collision prevention: {collision_prevention_result}, Immediate speed: {immediate_speed_result}, Result: {result}")
         
         return result
+    
+    def check_collision_prevention_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
+        """
+        Check for collision prevention trigger.
+        
+        Detects when agents are getting too close to each other and may collide.
+        This is especially useful for short episodes where traditional deadlock detection
+        may not have enough time to trigger.
+        
+        Args:
+            agent_id: ID of the agent to check
+            agent_states: Dictionary of all agent states
+            neighbor_states: Dictionary of neighbor states for the agent
+            
+        Returns:
+            bool: True if collision prevention should be triggered
+        """
+        if not self.collision_prevention_enabled:
+            return False
+        
+        if self.logger:
+            self.logger.logger.debug(f"🔍 COLLISION PREVENTION: Agent {agent_id}, Warning distance: {self.collision_warning_distance}")
+        
+        # Get current agent position
+        if agent_id not in agent_states or 'position' not in agent_states[agent_id]:
+            return False
+        
+        current_pos = agent_states[agent_id]['position']
+        if not isinstance(current_pos, (list, np.ndarray)) or len(current_pos) < 2:
+            return False
+        
+        # Count agents within warning distance
+        nearby_agents = 0
+        for other_id, other_state in agent_states.items():
+            if other_id == agent_id:
+                continue
+            
+            if 'position' not in other_state:
+                continue
+            
+            other_pos = other_state['position']
+            if not isinstance(other_pos, (list, np.ndarray)) or len(other_pos) < 2:
+                continue
+            
+            # Calculate distance
+            distance = math.sqrt((current_pos[0] - other_pos[0])**2 + (current_pos[1] - other_pos[1])**2)
+            
+            if distance <= self.collision_warning_distance:
+                nearby_agents += 1
+                if self.logger:
+                    self.logger.logger.debug(f"🔍 COLLISION WARNING: Agent {agent_id} near agent {other_id}, distance: {distance:.3f}")
+        
+        # Trigger if enough agents are nearby
+        result = nearby_agents >= self.collision_warning_agents
+        if self.logger:
+            self.logger.logger.debug(f"🔍 COLLISION PREVENTION: Agent {agent_id}, Nearby agents: {nearby_agents}, Threshold: {self.collision_warning_agents}, Result: {result}")
+        
+        return result
+    
+    def check_immediate_speed_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
+        """
+        Check for immediate speed-based collision detection.
+        
+        Detects when two agents are moving towards each other at high relative speed
+        and are within immediate collision distance. This is especially useful for
+        short episodes where traditional deadlock detection may not have enough time.
+        
+        Args:
+            agent_id: ID of the agent to check
+            agent_states: Dictionary of all agent states
+            neighbor_states: Dictionary of neighbor states for the agent
+            
+        Returns:
+            bool: True if immediate speed-based collision should be triggered
+        """
+        if not self.immediate_speed_detection_enabled:
+            return False
+        
+        if self.logger:
+            self.logger.logger.debug(f"🔍 IMMEDIATE SPEED: Agent {agent_id}, Distance threshold: {self.immediate_collision_distance}")
+        
+        # Get current agent state
+        if agent_id not in agent_states:
+            return False
+        
+        agent_state = agent_states[agent_id]
+        if 'position' not in agent_state or 'velocity' not in agent_state:
+            return False
+        
+        current_pos = agent_state['position']
+        current_vel = agent_state['velocity']
+        
+        if not isinstance(current_pos, (list, np.ndarray)) or len(current_pos) < 2:
+            return False
+        if not isinstance(current_vel, (list, np.ndarray)) or len(current_vel) < 2:
+            return False
+        
+        # Check for immediate collision risk with other agents
+        for other_id, other_state in agent_states.items():
+            if other_id == agent_id:
+                continue
+            
+            if 'position' not in other_state or 'velocity' not in other_state:
+                continue
+            
+            other_pos = other_state['position']
+            other_vel = other_state['velocity']
+            
+            if not isinstance(other_pos, (list, np.ndarray)) or len(other_pos) < 2:
+                continue
+            if not isinstance(other_vel, (list, np.ndarray)) or len(other_vel) < 2:
+                continue
+            
+            # Calculate distance
+            distance = math.sqrt((current_pos[0] - other_pos[0])**2 + (current_pos[1] - other_pos[1])**2)
+            
+            # Check if within immediate collision distance
+            if distance <= self.immediate_collision_distance:
+                # Calculate relative velocity
+                rel_vel_x = current_vel[0] - other_vel[0]
+                rel_vel_y = current_vel[1] - other_vel[1]
+                relative_speed = math.sqrt(rel_vel_x**2 + rel_vel_y**2)
+                
+                # Check if relative speed exceeds threshold
+                if relative_speed >= self.relative_speed_threshold:
+                    if self.logger:
+                        self.logger.logger.debug(f"🔍 IMMEDIATE COLLISION: Agent {agent_id} vs {other_id}, Distance: {distance:.3f}, Relative speed: {relative_speed:.3f}")
+                    return True
+        
+        return False
     
     def check_enhanced_speed_buffer_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
         """

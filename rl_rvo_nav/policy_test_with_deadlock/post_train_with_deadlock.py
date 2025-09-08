@@ -4,7 +4,8 @@ from pathlib import Path
 import platform
 from rl_rvo_nav.policy.policy_rnn_ac import rnn_ac
 from math import pi, sin, cos, sqrt
-import time 
+import time
+from rl_rvo_nav.test_logger import TestLogger 
 
 class post_train_with_deadlock:
     def __init__(self, env, num_episodes=100, max_ep_len=150, acceler_vel = 1.0, reset_mode=3, render=True, save=False, neighbor_region=4, neighbor_num=5, args=None, **kwargs):
@@ -37,6 +38,10 @@ class post_train_with_deadlock:
             'par_executions': 0,
             'total_par_time': 0
         }
+        
+        # Initialize test logger
+        self.test_logger = TestLogger(test_type="test_with_deadlock")
+        self.test_logger.set_environment(env)
 
     def policy_test(self, policy_type='drl', policy_path=None, policy_name='policy', result_path=None, result_name='/result.txt', figure_save_path=None, ani_save_path=None, policy_dict=False, once=False):
         
@@ -49,15 +54,31 @@ class post_train_with_deadlock:
         print('Policy Test with Deadlock Resolution Start !')
 
         figure_id = 0
+        episode_started = False
+        
         while n < self.num_episodes:
             
-            # Log episode start if deadlock resolution is enabled
-            if self.env.is_in_deadlock_resolution_mode() and hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
-                self.env.ir_gym.deadlock_logger.log_episode_start(n, self.robot_number, {
-                    'max_ep_len': self.max_ep_len,
+            # Start logging episode only once per episode
+            if not episode_started:
+                episode_config = {
+                    'policy_name': policy_name,
+                    'policy_type': policy_type,
                     'reset_mode': self.reset_mode,
-                    'render': self.render
-                })
+                    'max_ep_len': self.max_ep_len,
+                    'render': self.render,
+                    'deadlock_resolution_enabled': self.env.is_in_deadlock_resolution_mode()
+                }
+                self.test_logger.start_episode(n, self.robot_number, episode_config)
+                
+                # Log episode start if deadlock resolution is enabled (only once per episode)
+                if self.env.is_in_deadlock_resolution_mode() and hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
+                    self.env.ir_gym.deadlock_logger.log_episode_start(n, self.robot_number, {
+                        'max_ep_len': self.max_ep_len,
+                        'reset_mode': self.reset_mode,
+                        'render': self.render
+                    })
+                
+                episode_started = True
 
             # if n == 1:
             #     self.show_traj = True
@@ -95,6 +116,19 @@ class post_train_with_deadlock:
                 # 这里可以添加死锁检测统计逻辑
                 pass
 
+            # Log step data
+            robot_positions = self.test_logger.get_robot_positions_from_env(self.env)
+            robot_velocities = self.test_logger.get_robot_velocities_from_env(self.env)
+            agent_modes = self.test_logger.get_agent_modes_from_env(self.env)
+            step_info = {
+                'reward': float(r[0]),
+                'done': bool(np.max(d)),
+                'info': info.tolist() if hasattr(info, 'tolist') else info,
+                'deadlock_stats': self.deadlock_stats.copy(),
+                'agent_modes': agent_modes
+            }
+            self.test_logger.log_step(robot_positions, robot_velocities, step_info)
+
             robot_speed_list = [np.linalg.norm(robot.vel_omni) for robot in self.env.ir_gym.robot_list]
             avg_speed = np.average(robot_speed_list)
             speed_list.append(avg_speed)
@@ -113,14 +147,27 @@ class post_train_with_deadlock:
                     # Save episode data
                     self.env.ir_gym.deadlock_logger.save_episode_data()
                 
-                if np.min(info):
+                # Determine episode success and failure reason
+                episode_success = bool(np.min(info))
+                failure_reason = None
+                
+                if episode_success:
                     ep_len_list.append(ep_len)
                     if self.inf_print: print('Successful, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                 else:
                     if self.inf_print: print('Fail, Episode %d \t EpRet %.3f \t EpLen %d \t EpSpeed  %.3f'%(n, ep_ret, ep_len, speed))
                     
-                    # Print failure reasons
+                    # Print failure reasons and collect for logging
+                    failure_reason = self._get_failure_reasons()
                     self._print_failure_reasons()
+                
+                # End episode logging
+                self.test_logger.end_episode(
+                    success=episode_success,
+                    episode_reward=ep_ret,
+                    episode_length=ep_len,
+                    failure_reason=failure_reason
+                )
     
                 ep_ret_list.append(ep_ret)
                 mean_speed_list.append(speed)
@@ -129,6 +176,7 @@ class post_train_with_deadlock:
                 o, r, d, ep_ret, ep_len = self.env.reset(mode=self.reset_mode), 0, False, 0, 0
 
                 n += 1
+                episode_started = False  # Reset for next episode
 
                 if np.min(info):
                     sn+=1
@@ -157,6 +205,9 @@ class post_train_with_deadlock:
         f.close() 
         
         print( 'policy_name: '+ policy_name, ' successful rate: {:.2%}'.format(sn/self.num_episodes), "average EpLen:", mean_len, 'std length', std_len, 'average speed:', average_speed, 'std speed', std_speed, deadlock_info)
+        
+        # Save session summary
+        self.test_logger.save_session_summary()
 
     def _record_deadlock_stats_before_step(self):
         """记录步骤前的死锁解决统计信息"""
@@ -174,11 +225,23 @@ class post_train_with_deadlock:
     def _record_deadlock_stats_after_step(self):
         """记录步骤后的死锁解决统计信息"""
         if self.env.is_in_deadlock_resolution_mode():
+            # 从deadlock_logger获取最新的统计数据
+            if hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
+                logger = self.env.ir_gym.deadlock_logger
+                if hasattr(logger, 'episode_data') and logger.episode_data:
+                    episode_data = logger.episode_data
+                    # 更新死锁检测次数
+                    self.deadlock_stats['deadlock_detections'] = episode_data.get('episode_deadlock_count', 0)
+                    # 更新模式切换次数
+                    self.deadlock_stats['mode_switches'] = len(episode_data.get('mode_switches', []))
+                    # 更新PAR执行次数
+                    self.deadlock_stats['par_executions'] = len(episode_data.get('par_executions', []))
+            
             # 记录PAR执行时间
             for i in range(self.robot_number):
                 if self.env.get_current_mode(i) == 'par':
-                    self.deadlock_stats['par_executions'] += 1
                     # 这里可以添加更详细的PAR执行时间统计
+                    pass
 
     def _get_deadlock_stats_summary(self):
         """获取死锁解决统计摘要"""
@@ -193,20 +256,15 @@ class post_train_with_deadlock:
         if hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
             logger = self.env.ir_gym.deadlock_logger
             if hasattr(logger, 'episode_data') and logger.episode_data:
-                # 从所有episode数据中累计统计
-                for episode_data in logger.episode_data.values():
-                    if isinstance(episode_data, dict):
-                        # 从stats字段获取统计信息（logger保存的数据结构）
-                        if 'stats' in episode_data:
-                            stats = episode_data['stats']
-                            total_deadlock_detections += stats.get('deadlock_detections', 0)
-                            total_mode_switches += stats.get('mode_switches', 0)
-                            total_par_executions += stats.get('par_executions', 0)
-                        # 兼容旧格式，从episode_deadlock_count获取
-                        elif 'episode_deadlock_count' in episode_data:
-                            total_deadlock_detections += episode_data.get('episode_deadlock_count', 0)
-                            total_mode_switches += episode_data.get('mode_switches', 0)
-                            total_par_executions += episode_data.get('par_executions', 0)
+                # 直接从当前episode数据获取统计信息
+                episode_data = logger.episode_data
+                if isinstance(episode_data, dict):
+                    # 从episode_deadlock_count获取死锁检测次数
+                    total_deadlock_detections = episode_data.get('episode_deadlock_count', 0)
+                    # 从mode_switches列表长度获取模式切换次数
+                    total_mode_switches = len(episode_data.get('mode_switches', []))
+                    # 从par_executions列表长度获取PAR执行次数
+                    total_par_executions = len(episode_data.get('par_executions', []))
         
         # 如果无法从logger获取，则使用本地统计
         if total_deadlock_detections == 0:
@@ -247,8 +305,8 @@ class post_train_with_deadlock:
     def dis(self, p1, p2):
         return sqrt( (p2.py - p1.py)**2 + (p2.px - p1.px)**2 )
     
-    def _print_failure_reasons(self):
-        """Print detailed failure reasons for failed episode"""
+    def _get_failure_reasons(self):
+        """Get detailed failure reasons for failed episode as structured data"""
         collision_robots = []
         
         # Collect collision information from all robots
@@ -257,23 +315,53 @@ class post_train_with_deadlock:
                 collision_robots.append(robot.collision_info)
         
         if collision_robots:
-            print("  Failure reasons:")
+            failure_reasons = []
             for collision_info in collision_robots:
                 if collision_info['type'] == 'robot_robot':
-                    print(f"    Robot {collision_info['robot_id']} collided with Robot {collision_info['other_robot_id']}")
+                    failure_reasons.append({
+                        'type': 'robot_robot',
+                        'robot_id': collision_info['robot_id'],
+                        'other_robot_id': collision_info['other_robot_id']
+                    })
                 elif collision_info['type'] == 'robot_obstacle':
                     robot_id = collision_info['robot_id']
                     obstacle_type = collision_info['obstacle_type']
+                    reason = {
+                        'type': 'robot_obstacle',
+                        'robot_id': robot_id,
+                        'obstacle_type': obstacle_type
+                    }
+                    if obstacle_type in ['circular', 'line', 'polygon']:
+                        reason['obstacle_position'] = collision_info['obstacle_position']
+                    failure_reasons.append(reason)
+            return failure_reasons
+        else:
+            return [{'type': 'timeout', 'reason': 'Episode reached maximum length'}]
+    
+    def _print_failure_reasons(self):
+        """Print detailed failure reasons for failed episode"""
+        failure_reasons = self._get_failure_reasons()
+        
+        if failure_reasons:
+            print("  Failure reasons:")
+            for reason in failure_reasons:
+                if reason['type'] == 'robot_robot':
+                    print(f"    Robot {reason['robot_id']} collided with Robot {reason['other_robot_id']}")
+                elif reason['type'] == 'robot_obstacle':
+                    robot_id = reason['robot_id']
+                    obstacle_type = reason['obstacle_type']
                     if obstacle_type == 'circular':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with circular obstacle at ({pos[0]:.2f}, {pos[1]:.2f})")
                     elif obstacle_type == 'map':
                         print(f"    Robot {robot_id} collided with map obstacle")
                     elif obstacle_type == 'line':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with line obstacle from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
                     elif obstacle_type == 'polygon':
-                        pos = collision_info['obstacle_position']
+                        pos = reason['obstacle_position']
                         print(f"    Robot {robot_id} collided with polygon obstacle edge from ({pos[0]:.2f}, {pos[1]:.2f}) to ({pos[2]:.2f}, {pos[3]:.2f})")
+                elif reason['type'] == 'timeout':
+                    print(f"    {reason['reason']}")
         else:
             print("  No collision information available")
