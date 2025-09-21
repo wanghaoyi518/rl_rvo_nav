@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import json
 import numpy as np
+import math
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 
 class DeadlockLogger:
@@ -346,6 +350,100 @@ class DeadlockLogger:
         # Log PAR solver initialization details
         # self.logger.info(f"🔧 PAR SOLVER DETAILS: Detailed execution information")
         pass
+
+        # Ensure par_details is defined before any later references
+        par_details = {
+            'step': self.stats['step'],
+            'initialization': {
+                'start_positions': par_solver_input.get('start_positions', {}),
+                'goal_positions': par_solver_input.get('goal_positions', {}),
+                'participants': participants,
+                'workspace_bounds': par_solver_input.get('workspace_bounds', {}),
+                'grid_resolution': par_solver_input.get('grid_resolution', 0.2),
+                'sub_map_dims': par_solver_input.get('sub_map_dims'),
+                'obstacle_occupancy': par_solver_input.get('obstacle_occupancy'),
+                'diagnostics': par_solver_input.get('diagnostics'),
+                'participant_count': par_solver_input.get('participant_count'),
+                'bfs_connectivity': par_solver_input.get('bfs_connectivity'),
+                'connectivity_extras': par_solver_input.get('connectivity_extras'),
+                'grid_offset': par_solver_input.get('grid_offset', (0, 0)),  # Add grid_offset for debugging
+                'mapf_config': par_solver_input.get('mapf_config', {}),  # Add MAPF configuration
+                'solver_actor_set': par_solver_input.get('solver_actor_set', []),  # Add solver actor set
+                'id_mapping': par_solver_input.get('id_mapping', {}),  # Add ID mapping
+                # map/agents summary (map_config_example-like)
+                # 'grid_numeric': None,  # Removed to reduce log size
+                'grid_pretty': None,
+                # 'agents_summary': None,  # Removed to reduce log size
+            },
+            'solution': {
+                'trajectories': {},
+                'success': bool(getattr(par_solution, 'success', False)),
+                'solver_type': 'PNR',
+                'meta': {}
+            },
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # Fill map/agents dump if sub_map available
+        try:
+            sub_map = None
+            if isinstance(par_solver_input, dict):
+                sub_map = par_solver_input.get('sub_map')
+            if sub_map is not None and hasattr(sub_map, 'grid'):
+                grid = sub_map.grid
+                # Keep original grid format: grid[i][j] where i=row, j=col
+                # This matches PNR algorithm's expectation: sub_map.grid[i][j]
+                # grid_numeric = [[int(cell) for cell in row] for row in grid]  # Removed to reduce log size
+                # par_details['initialization']['grid_numeric'] = grid_numeric  # Removed to reduce log size
+                # pretty rows with indices (limited formatting) - reverse order for better readability
+                rows = []
+                for i, row in enumerate(grid):
+                    rows.append(f"row{i}: {[int(cell) for cell in row]}")
+                # Reverse the order so row0 appears at the bottom (like a normal coordinate system)
+                par_details['initialization']['grid_pretty'] = list(reversed(rows))
+                # Build MAP_CONFIG structure
+                # Agents use (x, y) = (col, row) coordinate order to match RL coordinate system
+                starts = par_solver_input.get('start_positions', {}) if isinstance(par_solver_input, dict) else {}
+                goals = par_solver_input.get('goal_positions', {}) if isinstance(par_solver_input, dict) else {}
+                agents_cfg = []
+                for aid in participants:
+                    sp = starts.get(aid)
+                    gp = goals.get(aid)
+                    if isinstance(sp, (list, tuple)) and len(sp) == 2 and isinstance(gp, (list, tuple)) and len(gp) == 2:
+                        # sp = (x, y) = (col, row) - keep original order
+                        agents_cfg.append({
+                            'id': int(aid),
+                            'start': [int(sp[0]), int(sp[1])],  # [x, y] = [col, row]
+                            'goal': [int(gp[0]), int(gp[1])]    # [x, y] = [col, row]
+                        })
+                par_details['initialization']['MAP_CONFIG'] = {
+                    'grid': [[int(cell) for cell in row] for row in grid],  # Generate grid on demand
+                    'agents': agents_cfg
+                }
+        except Exception:
+            pass
+
+        # Build agents summary similar to test files - REMOVED to reduce log size
+        # try:
+        #     starts = par_solver_input.get('start_positions', {}) if isinstance(par_solver_input, dict) else {}
+        #     goals = par_solver_input.get('goal_positions', {}) if isinstance(par_solver_input, dict) else {}
+        #     meta = par_solver_input.get('solution_meta', {}) if isinstance(par_solver_input, dict) else {}
+        #     st_ok = meta.get('starts_traversable', {}) if isinstance(meta, dict) else {}
+        #     gt_ok = meta.get('goals_traversable', {}) if isinstance(meta, dict) else {}
+        #     agents_summary = []
+        #     for aid in participants:
+        #         s = starts.get(aid)
+        #         g = goals.get(aid)
+        #         agents_summary.append({
+        #             'agent_id': aid,
+        #             'start_grid': list(s) if isinstance(s, (list, tuple)) else s,
+        #             'goal_grid': list(g) if isinstance(g, (list, tuple)) else g,
+        #             'start_traversable': st_ok.get(aid) if isinstance(st_ok, dict) else None,
+        #             'goal_traversable': gt_ok.get(aid) if isinstance(gt_ok, dict) else None,
+        #         })
+        #     par_details['initialization']['agents_summary'] = agents_summary
+        # except Exception:
+        #     pass
         
         # Log initialization positions
         if 'start_positions' in par_solver_input:
@@ -375,7 +473,7 @@ class DeadlockLogger:
                     agent_moves[move.id] = []
                 agent_moves[move.id].append((move.di, move.dj))
             
-            # Log detailed trajectories
+            # Log detailed trajectories and store in par_details
             for agent_id in participants:
                 if agent_id in agent_moves:
                     moves = agent_moves[agent_id]
@@ -385,72 +483,196 @@ class DeadlockLogger:
                     path.append(current_pos)
                     
                     for di, dj in moves:
-                        new_pos = (current_pos[0] + di, current_pos[1] + dj)
+                        # ActorMove uses di/dj naming where di=row_increment, dj=col_increment
+                        # In RL coordinate system: x=col, y=row, so dj->x, di->y
+                        new_pos = (current_pos[0] + dj, current_pos[1] + di)
                         path.append(new_pos)
                         current_pos = new_pos
                     
                     path_str = " → ".join([f"({x}, {y})" for x, y in path])
                     # self.logger.info(f"   Agent {agent_id}: {path_str}")
-                    pass
+                    
+                    # Store trajectory in par_details
+                    par_details['solution']['trajectories'][str(agent_id)] = {
+                        'path': path,
+                        'moves': moves,
+                        'path_length': len(path)
+                    }
                 else:
                     # self.logger.info(f"   Agent {agent_id}: No trajectory computed")
-                    pass
-        
-        # Store detailed information in episode data for later analysis
-        par_details = {
-            'step': self.stats['step'],
-            'initialization': {
-                'start_positions': par_solver_input.get('start_positions', {}),
-                'goal_positions': par_solver_input.get('goal_positions', {}),
-                'participants': participants,
-                'workspace_bounds': par_solver_input.get('workspace_bounds', {}),
-                'grid_resolution': par_solver_input.get('grid_resolution', 0.2)
-            },
-            'solution': {
-                'trajectories': {},
-                'success': par_solution is not None,
-                'solver_type': 'PNR' if par_solution and hasattr(par_solution, 'agents_moves') else 'Fallback'
-            },
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        # Extract trajectories if available
-        if par_solution and hasattr(par_solution, 'agents_moves'):
-            agent_moves = {}
-            for move in par_solution.agents_moves:
-                if move.id not in agent_moves:
-                    agent_moves[move.id] = []
-                agent_moves[move.id].append((move.di, move.dj))
-            
-            for agent_id in participants:
-                if agent_id in agent_moves:
-                    moves = agent_moves[agent_id]
-                    # Calculate cumulative path
-                    path = []
-                    current_pos = par_solver_input['start_positions'].get(agent_id, (0, 0))
-                    path.append(current_pos)
-                    
-                    for di, dj in moves:
-                        new_pos = (current_pos[0] + di, current_pos[1] + dj)
-                        path.append(new_pos)
-                        current_pos = new_pos
-                    
-                    par_details['solution']['trajectories'][agent_id] = {
-                        'moves': moves,
-                        'path': path,
-                        'final_position': path[-1] if path else current_pos
-                    }
-                else:
-                    par_details['solution']['trajectories'][agent_id] = {
-                        'moves': [],
+                    par_details['solution']['trajectories'][str(agent_id)] = {
                         'path': [],
-                        'final_position': par_solver_input['start_positions'].get(agent_id, (0, 0))
+                        'moves': [],
+                        'path_length': 0
                     }
         
+        # Attach meta if available on result
+        try:
+            meta = {}
+            for key in ['runtime', 'steps', 'stats']:
+                if hasattr(par_solution, key):
+                    meta[key] = getattr(par_solution, key)
+            # copy any extra meta captured in coordinator via par_solver_input
+            extra = par_solver_input.get('solution_meta') if isinstance(par_solver_input, dict) else None
+            if extra:
+                meta.update(extra)
+            if meta:
+                par_details['solution']['meta'] = meta
+        except Exception:
+            pass
+
         # Store in episode data
         if 'par_solver_details' not in self.episode_data:
             self.episode_data['par_solver_details'] = []
         self.episode_data['par_solver_details'].append(par_details)
+
+        # Generate per-initialize PAR debug figure (static) under current run log dir
+        try:
+            init = par_details.get('initialization', {})
+            starts_grid = init.get('start_positions', {})
+            goals_grid = init.get('goal_positions', {})
+            bounds = init.get('workspace_bounds', {})
+            res = float(init.get('grid_resolution', 0.2))
+
+            min_x = float(bounds.get('min_x', 0.0))
+            max_x = float(bounds.get('max_x', 0.0))
+            min_y = float(bounds.get('min_y', 0.0))
+            max_y = float(bounds.get('max_y', 0.0))
+
+            # Reconstruct continuous trajectories from agents_moves if available
+            cont_paths = {}
+            if par_solution and hasattr(par_solution, 'agents_moves') and isinstance(starts_grid, dict):
+                # Build cumulative grid paths per agent id
+                init_pos = {}
+                for k, gp in starts_grid.items():
+                    try:
+                        aid = int(k)
+                    except Exception:
+                        aid = k
+                    if isinstance(gp, (list, tuple)) and len(gp) == 2:
+                        init_pos[aid] = (int(gp[0]), int(gp[1]))
+                # Accumulate
+                paths_grid = {aid: [pos] for aid, pos in init_pos.items()}
+                for mv in getattr(par_solution, 'agents_moves', []) or []:
+                    aid = getattr(mv, 'id', None)
+                    di = getattr(mv, 'di', getattr(mv, 'dx', 0))  # row_increment (y direction)
+                    dj = getattr(mv, 'dj', getattr(mv, 'dy', 0))  # col_increment (x direction)
+                    if aid in paths_grid and paths_grid[aid]:
+                        gx, gy = paths_grid[aid][-1]
+                        # Fix coordinate system: di=row_increment (y), dj=col_increment (x)
+                        paths_grid[aid].append((gx + dj, gy + di))
+                # Convert to continuous (cell centers)
+                for aid, gpath in paths_grid.items():
+                    cont = [(min_x + (p[0] + 0.5) * res, min_y + (p[1] + 0.5) * res) for p in gpath]
+                    cont_paths[aid] = cont
+
+            # Convert starts/goals to continuous
+            starts_cont = {}
+            goals_cont = {}
+            if isinstance(starts_grid, dict):
+                for k, gp in starts_grid.items():
+                    try:
+                        aid = int(k)
+                    except Exception:
+                        aid = k
+                    if isinstance(gp, (list, tuple)) and len(gp) == 2:
+                        starts_cont[aid] = (min_x + (gp[0] + 0.5) * res, min_y + (gp[1] + 0.5) * res)
+            if isinstance(goals_grid, dict):
+                for k, gp in goals_grid.items():
+                    try:
+                        aid = int(k)
+                    except Exception:
+                        aid = k
+                    if isinstance(gp, (list, tuple)) and len(gp) == 2:
+                        goals_cont[aid] = (min_x + (gp[0] + 0.5) * res, min_y + (gp[1] + 0.5) * res)
+
+            # Plot figure
+            fig, ax = plt.subplots(figsize=(6, 6))
+            ax.set_aspect('equal')
+            ax.set_xlim(min_x, max_x)
+            ax.set_ylim(min_y, max_y)
+            ax.set_title(f"PAR Init ep{self.stats['episode']} step{self.stats['step']}")
+            # grid ticks per grid resolution
+            if res > 0:
+                ax.set_xticks(np.arange(min_x, max_x + 1e-9, res))
+                ax.set_yticks(np.arange(min_y, max_y + 1e-9, res))
+                ax.grid(True, linestyle='--', alpha=0.35)
+            # If we have access to sub_map grid, overlay obstacle raster as a light gray image
+            try:
+                sub_map = par_details.get('sub_map', None)
+                # Fallback: use current function arguments (par_solver_input)
+                if sub_map is None and isinstance(par_solver_input, dict):
+                    sub_map = par_solver_input.get('sub_map', None)
+                grid = None
+                if sub_map is not None and hasattr(sub_map, 'grid'):
+                    grid = np.array(sub_map.grid, dtype=float)
+                elif 'obstacle_grid' in par_details:
+                    grid = np.array(par_details.get('obstacle_grid'))
+                if grid is not None and grid.size > 0:
+                    # grid is indexed [row(y), col(x)] with 1 for obstacle
+                    # extent maps cell edges to continuous coordinates
+                    extent = [min_x, max_x, min_y, max_y]
+                    ax.imshow(grid, cmap='Greys', alpha=0.25, origin='lower', extent=extent, interpolation='nearest')
+            except Exception:
+                pass
+
+            # submap rectangle and corner annotations
+            rect = plt.Rectangle((min_x, min_y), max_x - min_x, max_y - min_y, fill=False, edgecolor='black', linewidth=1.0, linestyle=':')
+            ax.add_patch(rect)
+            ax.text(min_x, min_y, f"({min_x:.2f},{min_y:.2f})", fontsize=8)
+            ax.text(max_x, max_y, f"({max_x:.2f},{max_y:.2f})", fontsize=8, ha='right', va='bottom')
+
+            # choose colors
+            agents = sorted(set(list(starts_cont.keys()) + list(goals_cont.keys()) + list(cont_paths.keys())))
+            colors = plt.cm.get_cmap('tab10', max(10, len(agents)))
+            color_map = {aid: colors(i % 10) for i, aid in enumerate(agents)}
+
+            # draw goals
+            for aid, (gx, gy) in goals_cont.items():
+                c = color_map.get(aid, 'gray')
+                ax.plot([gx], [gy], 'x', color=c, markersize=7, alpha=0.9)
+                ax.text(gx, gy, f"g{aid}", fontsize=7, color=c, va='bottom', ha='left')
+            # draw starts and paths
+            for aid in agents:
+                c = color_map.get(aid, 'gray')
+                if aid in starts_cont:
+                    sx, sy = starts_cont[aid]
+                    ax.plot([sx], [sy], 'o', color=c, markersize=6, alpha=0.9)
+                    ax.text(sx, sy, f"s{aid}", fontsize=7, color=c, va='top', ha='right')
+                path = cont_paths.get(aid, [])
+                if path and len(path) > 1:
+                    xs = [p[0] for p in path]
+                    ys = [p[1] for p in path]
+                    ax.plot(xs, ys, '-', color=c, linewidth=1.5, alpha=0.8)
+                elif aid in starts_cont and aid in goals_cont:
+                    sx, sy = starts_cont[aid]
+                    gx, gy = goals_cont[aid]
+                    ax.plot([sx, gx], [sy, gy], linestyle='--', color=c, linewidth=1.0, alpha=0.5)
+
+            # save file
+            out_dir = self.log_dir / "par_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            outfile = out_dir / f"par_init_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}.png"
+            fig.savefig(str(outfile), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+
+            # Also dump a JSON alongside the image for trajectory and diagnostics inspection
+            try:
+                jsonfile = out_dir / f"par_init_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}.json"
+                # Avoid non-serializable fields like sub_map objects
+                serializable = {
+                    'step': par_details.get('step'),
+                    'initialization': par_details.get('initialization', {}),
+                    'solution': par_details.get('solution', {}),
+                    'obstacle_occupancy': par_details.get('initialization', {}).get('obstacle_occupancy')
+                }
+                with open(jsonfile, 'w') as jf:
+                    json.dump(self._convert_to_serializable(serializable), jf, indent=2)
+            except Exception as _:
+                pass
+        except Exception as e:
+            # Do not break logging pipeline if visualization fails
+            self.logger.debug(f"PAR VIS ERROR: {e}")
     
     def log_par_final_positions(self, agent_final_positions: Dict[int, List[float]]):
         """Log final agent positions after PAR execution completion."""

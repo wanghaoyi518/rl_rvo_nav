@@ -136,3 +136,18 @@ figure/
 
 # Deadlock logs
 rl_rvo_nav/policy_test_with_deadlock/deadlock_logs/
+
+*.png
+*.eps
+*.gif
+*.pdf
+*.svg
+*.jpg
+*.jpeg
+*.png
+*.eps
+*.gif
+*.pdf
+*.svg
+*.jpg
+*.jpeg

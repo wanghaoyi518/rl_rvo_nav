@@ -14,8 +14,16 @@ class mrnav(gym.Env):
         self.square = kwargs.get('square', [0, 0, 10, 10])
         self.interval = kwargs.get('interval', 1)
 
-    # def step(self, action, vel_type='omni', stop=True, **kwargs):
-    def step_ir(self, action, vel_type='omni', stop=True, **kwargs):
+    def step(self, action, vel_type='diff', stop=True, **kwargs):
+        # Use deadlock resolution if enabled
+        if hasattr(self.ir_gym, 'enable_deadlock_resolution') and self.ir_gym.enable_deadlock_resolution:
+            return self.ir_gym._step_with_deadlock_resolution(action)
+        else:
+            # Original step logic
+            return self.step_ir(action, vel_type=vel_type, stop=stop, **kwargs)
+    
+    # def step_original(self, action, vel_type='diff', stop=True, **kwargs):
+    def step_ir(self, action, vel_type='diff', stop=True, **kwargs):
 
         if not isinstance(action, list):
             action = [action]

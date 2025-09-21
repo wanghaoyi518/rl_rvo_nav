@@ -143,15 +143,14 @@ class post_train:
                 if np.min(info):
                     sn+=1
                     
-                    # if n == 2: 
-                        
-                    if once:
-                        self.env.ir_gym.world_plot.save_gif_figure(figure_save_path, 0, format='eps')
-                        break
-                        
-                    if self.save:
-                        self.env.ir_gym.save_ani(figure_save_path, ani_save_path, ani_name=policy_name)
-                        break
+                # Save GIF regardless of success or failure when --save or --once is used
+                if once:
+                    self.env.ir_gym.world_plot.save_gif_figure(figure_save_path, 0, format='eps')
+                    break
+                    
+                if self.save:
+                    self.env.ir_gym.save_ani(figure_save_path, ani_save_path, ani_name=policy_name)
+                    break
 
         mean_len = 0 if len(ep_len_list) == 0 else np.round(np.mean(ep_len_list), 2)
         std_len = 0 if len(ep_len_list) == 0 else np.round(np.std(ep_len_list), 2)

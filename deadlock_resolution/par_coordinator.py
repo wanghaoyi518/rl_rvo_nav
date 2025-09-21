@@ -66,6 +66,23 @@ class PARCoordinator:
         # Compute start and goal positions
         start_positions = self.par_environment.compute_start_positions(agent_states)
         goal_positions = self.par_environment.compute_goal_positions(agent_states)
+
+        # Ensure workspace bounds are available for logging and downstream tools
+        # Use full world bounds instead of local region bounds
+        try:
+            full_bounds = workspace.get('bounds', {})
+            self.par_environment.workspace_bounds = {
+                'min_x': full_bounds.get('min_x', 0.0),
+                'max_x': full_bounds.get('max_x', 10.0),
+                'min_y': full_bounds.get('min_y', 0.0),
+                'max_y': full_bounds.get('max_y', 10.0),
+                'width': full_bounds.get('max_x', 10.0) - full_bounds.get('min_x', 0.0),
+                'height': full_bounds.get('max_y', 10.0) - full_bounds.get('min_y', 0.0),
+                'participants': deadlock_participants,
+                'grid_resolution': self.config.get('GRID_RESOLUTION', 0.2)
+            }
+        except Exception:
+            pass
         
         # Log PAR input parameters for debugging
         # print(f"🔍 PAR INPUT PARAMETERS:")
@@ -108,9 +125,162 @@ class PARCoordinator:
             'goal_positions': goal_positions,
             'participants': list(start_positions.keys()),
             'workspace_bounds': getattr(self.par_environment, 'workspace_bounds', {}),
-            'grid_resolution': self.config.get('GRID_RESOLUTION', 0.2)
+            'grid_resolution': self.config.get('GRID_RESOLUTION', 0.2),
+            'grid_offset': getattr(self.par_environment, 'grid_offset', (0, 0))  # Add grid_offset for debugging
         }
+
+        # Add sub-map diagnostics
+        try:
+            width = sub_map.width if sub_map else 0
+            height = sub_map.height if sub_map else 0
+            occupancy = 0.0
+            if sub_map and hasattr(sub_map, 'grid') and width > 0 and height > 0:
+                occ = sum(1 for row in sub_map.grid for cell in row if cell)
+                occupancy = occ / float(width * height)
+            par_solver_input['sub_map_dims'] = {'width': width, 'height': height}
+            par_solver_input['sub_map'] = sub_map
+            par_solver_input['obstacle_occupancy'] = occupancy
+            par_solver_input['participant_count'] = len(actor_set.actors) if actor_set and hasattr(actor_set, 'actors') else len(start_positions)
+            # Per-agent grid diagnostics
+            diagnostics = {}
+            for aid, sp in start_positions.items():
+                gp = goal_positions.get(aid)
+                if isinstance(sp, tuple) and gp and isinstance(gp, tuple):
+                    dx = gp[0] - sp[0]
+                    dy = gp[1] - sp[1]
+                    diagnostics[aid] = {
+                        'start': sp,
+                        'goal': gp,
+                        'start_equals_goal': (dx == 0 and dy == 0),
+                        'grid_distance': (dx*dx + dy*dy) ** 0.5
+                    }
+            par_solver_input['diagnostics'] = diagnostics
+        except Exception:
+            pass
+
+        # Connectivity diagnostic: simple BFS reachability on current sub_map for each agent
+        try:
+            debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
+        except Exception:
+            debug_mode = False
+        if debug_mode and sub_map and hasattr(sub_map, 'grid'):
+            def in_bounds(i, j):
+                return 0 <= i < sub_map.height and 0 <= j < sub_map.width
+            def is_free(i, j):
+                # Assumption: 0 = free, 1 = obstacle
+                return in_bounds(i, j) and sub_map.grid[i][j] == 0
+            from collections import deque
+            bfs_connectivity = {}
+            for aid, sp in start_positions.items():
+                gp = goal_positions.get(aid)
+                if sp is None or gp is None:
+                    bfs_connectivity[aid] = {'free_start': None, 'free_goal': None, 'reachable': None}
+                    continue
+                si, sj = sp[1], sp[0]
+                gi, gj = gp[1], gp[0]
+                reachable = False
+                if is_free(si, sj) and is_free(gi, gj):
+                    q = deque([(si, sj)])
+                    seen = set([(si, sj)])
+                    dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+                    while q:
+                        ci, cj = q.popleft()
+                        if ci == si and cj == sj:
+                            pass
+                        if ci == gi and cj == gj:
+                            reachable = True
+                            break
+                        for di, dj in dirs:
+                            ni, nj = ci + di, cj + dj
+                            if (ni, nj) not in seen and is_free(ni, nj):
+                                seen.add((ni, nj))
+                                q.append((ni, nj))
+                fs = is_free(si, sj)
+                fg = is_free(gi, gj)
+                bfs_connectivity[aid] = {'free_start': fs, 'free_goal': fg, 'reachable': reachable}
+                print(f"PAR DIAG BFS: agent={aid} start={sp} goal={gp} free_start={fs} free_goal={fg} reachable={reachable}")
+            # attach to solver input for logging
+            par_solver_input['bfs_connectivity'] = bfs_connectivity
+
+            # Connectivity extras: free-cell components and slack
+            try:
+                # Compute connected components over free cells
+                comp_id = [[-1 for _ in range(sub_map.width)] for __ in range(sub_map.height)]
+                comp_sizes = {}
+                comp_idx = 0
+                dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+                for i in range(sub_map.height):
+                    for j in range(sub_map.width):
+                        if is_free(i,j) and comp_id[i][j] == -1:
+                            q = deque([(i,j)])
+                            comp_id[i][j] = comp_idx
+                            size = 0
+                            while q:
+                                ci,cj = q.popleft()
+                                size += 1
+                                for di,dj in dirs:
+                                    ni,nj = ci+di,cj+dj
+                                    if is_free(ni,nj) and comp_id[ni][nj] == -1:
+                                        comp_id[ni][nj] = comp_idx
+                                        q.append((ni,nj))
+                            comp_sizes[comp_idx] = size
+                            comp_idx += 1
+                # Participant components
+                part_comp = {}
+                for aid, sp in start_positions.items():
+                    if sp is None: continue
+                    si,sj = sp[1], sp[0]
+                    cid = comp_id[si][sj] if in_bounds(si,sj) else -1
+                    part_comp[aid] = cid
+                same_component = len(set([c for c in part_comp.values() if c is not None])) == 1 if part_comp else False
+                first_cid = next(iter(part_comp.values())) if part_comp else None
+                free_cells_total = sum(1 for i in range(sub_map.height) for j in range(sub_map.width) if is_free(i,j))
+                free_cells_component = comp_sizes.get(first_cid, 0) if first_cid is not None else 0
+                slack_component = free_cells_component - len(start_positions)
+                par_solver_input['connectivity_extras'] = {
+                    'same_component': same_component,
+                    'participant_components': part_comp,
+                    'component_sizes': comp_sizes,
+                    'free_cells_total': free_cells_total,
+                    'free_cells_component': free_cells_component,
+                    'slack_component': slack_component,
+                }
+            except Exception:
+                pass
         
+        # --- Optional sub-map cropping to minimal bounding box over starts/goals ---
+        # Introduce a config switch to disable cropping entirely for debugging
+        grid_offset = (0, 0)
+        disable_crop = bool(self.config.get('PAR_DISABLE_CROP', True)) if isinstance(self.config, dict) else True
+        if not disable_crop:
+            try:
+                if sub_map and hasattr(sub_map, 'grid') and hasattr(sub_map, 'width') and hasattr(sub_map, 'height'):
+                    if start_positions and goal_positions:
+                        min_x = min([sp[0] for sp in start_positions.values()] + [gp[0] for gp in goal_positions.values()])
+                        min_y = min([sp[1] for sp in start_positions.values()] + [gp[1] for gp in goal_positions.values()])
+                        max_x = max([sp[0] for sp in start_positions.values()] + [gp[0] for gp in goal_positions.values()])
+                        max_y = max([sp[1] for sp in start_positions.values()] + [gp[1] for gp in goal_positions.values()])
+
+                        pad = int(self.config.get('PAR_CROP_PADDING', 1)) if isinstance(self.config, dict) else 1
+                        min_x = max(0, min_x - pad)
+                        min_y = max(0, min_y - pad)
+                        max_x = min(sub_map.width - 1, max_x + pad)
+                        max_y = min(sub_map.height - 1, max_y + pad)
+
+                        # Crop grid (rows = y, cols = x)
+                        cropped_grid = [row[min_x:max_x + 1] for row in sub_map.grid[min_y:max_y + 1]]
+
+                        # Apply crop to sub_map
+                        sub_map.grid = cropped_grid
+                        sub_map.width = max_x - min_x + 1
+                        sub_map.height = max_y - min_y + 1
+
+                        # Record local->original grid offset
+                        grid_offset = (min_x, min_y)
+            except Exception:
+                # On any issue, skip cropping and keep full sub_map
+                grid_offset = (0, 0)
+
         # Clear previous solution
         if hasattr(self.pnr_solver, 'clear'):
             try:
@@ -135,10 +305,172 @@ class PARCoordinator:
             
             # Update actor set with proper start and goal positions
             self._update_actor_set_positions(actor_set, start_positions, goal_positions)
+
+            # Remap real agent ids -> solver-local contiguous ids [0..k-1]
+            # Many MAPF implementations assume contiguous ids for internal arrays
+            participants_real_ids = list(start_positions.keys())
+            id_real_to_solver: Dict[int, int] = {rid: idx for idx, rid in enumerate(participants_real_ids)}
+            id_solver_to_real: Dict[int, int] = {v: k for k, v in id_real_to_solver.items()}
+
+            # Build a solver-local ActorSet with contiguous ids
+            from python_pnr.actor_set import ActorSet as SolverActorSet
+            from python_pnr.actor import Actor as SolverActor
+            from python_pnr.node import Point as SolverPoint
+
+            solver_actor_set = SolverActorSet()
+            for rid in participants_real_ids:
+                sp = start_positions.get(rid)
+                gp = goal_positions.get(rid)
+                if sp is None or gp is None:
+                    # Skip if either missing
+                    continue
+                sid = id_real_to_solver[rid]
+                # Coordinate mapping: our start/goal tuples are (x, y) = (col, row) -> SolverPoint(x, y)
+                # Adjust to cropped local coordinates by subtracting grid_offset
+                try:
+                    ox, oy = grid_offset
+                except Exception:
+                    ox, oy = 0, 0
+                s_point = SolverPoint(int(sp[0] - ox), int(sp[1] - oy))
+                g_point = SolverPoint(int(gp[0] - ox), int(gp[1] - oy))
+                solver_actor_set.add_actor(SolverActor(sid, s_point, g_point))
             
-            # Call the real PNR solver
-            # print(f"   Calling PNR solver with {len(actor_set)} agents...")
-            result = self.pnr_solver.start_search(sub_map, mapf_config, actor_set)
+            # Add solver input information to logging
+            par_solver_input['mapf_config'] = {
+                'max_steps': mapf_config.max_steps,
+                'timeout': mapf_config.timeout,
+                'heuristic_weight': mapf_config.heuristic_weight
+            }
+            
+            # Add solver actor set information
+            solver_actors_info = []
+            for actor in solver_actor_set:
+                solver_actors_info.append({
+                    'id': actor.id,
+                    'start': (actor.current.x, actor.current.y),
+                    'goal': (actor.goal.x, actor.goal.y)
+                })
+            par_solver_input['solver_actor_set'] = solver_actors_info
+            
+            # Add ID mapping information
+            par_solver_input['id_mapping'] = {
+                'real_to_solver': id_real_to_solver,
+                'solver_to_real': id_solver_to_real
+            }
+            
+            # Call solver with the original sub_map
+            chosen_api = 'start_search'
+            result = self.pnr_solver.start_search(sub_map, mapf_config, solver_actor_set)
+            
+            # Store the ID mapping in the result for later use
+            result.id_solver_to_real = id_solver_to_real
+            result.id_real_to_solver = id_real_to_solver
+            # Also store the cropping offset so executor can restore to original grid frame
+            try:
+                result.grid_offset = grid_offset
+            except Exception:
+                pass
+
+            # Capture solver meta info if available
+            solution_meta = {}
+            try:
+                # Pre-solver diagnostics
+                try:
+                    # Count actors passed to solver
+                    actor_count = 0
+                    try:
+                        for _ in solver_actor_set:
+                            actor_count += 1
+                    except Exception:
+                        actor_count = len(getattr(solver_actor_set, 'actors', [])) if hasattr(solver_actor_set, 'actors') else 0
+                    solution_meta['solver_actor_count'] = actor_count
+
+                    # Traversability checks (solver view: 0=free)
+                    starts_trav = {}
+                    goals_trav = {}
+                    starts_equal_goals = {}
+                    eff_participants = 0
+                    if sub_map and hasattr(sub_map, 'grid'):
+                        height = sub_map.height
+                        width = sub_map.width
+                        def in_bounds(i,j):
+                            return 0 <= i < height and 0 <= j < width
+                        def is_free(i,j):
+                            return in_bounds(i,j) and sub_map.grid[i][j] == 0
+                        for aid, sp in start_positions.items():
+                            gp = goal_positions.get(aid)
+                            si, sj = (sp[1], sp[0]) if isinstance(sp, tuple) else (None, None)
+                            gi, gj = (gp[1], gp[0]) if isinstance(gp, tuple) else (None, None)
+                            st = is_free(si, sj) if si is not None else None
+                            gt = is_free(gi, gj) if gi is not None else None
+                            eq = (sp == gp) if (sp is not None and gp is not None) else None
+                            starts_trav[aid] = st
+                            goals_trav[aid] = gt
+                            starts_equal_goals[aid] = eq
+                            if sp is not None and gp is not None:
+                                eff_participants += 1
+                    solution_meta['starts_traversable'] = starts_trav
+                    solution_meta['goals_traversable'] = goals_trav
+                    solution_meta['starts_equal_goals'] = starts_equal_goals
+                    solution_meta['effective_participants'] = eff_participants
+                    if actor_count < 2:
+                        solution_meta.setdefault('failure_reason', 'insufficient_actors')
+                except Exception:
+                    pass
+
+                if hasattr(result, 'runtime'):
+                    solution_meta['runtime'] = result.runtime
+                if hasattr(result, 'steps'):
+                    solution_meta['steps'] = result.steps
+                if hasattr(result, 'stats'):
+                    solution_meta['stats'] = result.stats
+                # also capture solver attributes if exposed
+                for attr in ['expanded_nodes', 'generated_nodes', 'timeouts', 'max_frontier', 'failure_reason']:
+                    if hasattr(self.pnr_solver, attr):
+                        solution_meta[attr] = getattr(self.pnr_solver, attr)
+                # attach into input for logger persistence
+                try:
+                    par_solver_input['solution_meta'] = solution_meta
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Ensure agents_moves are attached to result BEFORE logging (remap solver ids -> real ids)
+            try:
+                if hasattr(self.pnr_solver, 'agents_moves') and self.pnr_solver.agents_moves is not None:
+                    remapped_moves = []
+                    for mv in self.pnr_solver.agents_moves:
+                        try:
+                            solver_id = getattr(mv, 'id', None)
+                            real_id = id_solver_to_real.get(solver_id, solver_id)
+                            mv.id = real_id
+                            remapped_moves.append(mv)
+                        except Exception:
+                            remapped_moves.append(mv)
+                    result.agents_moves = remapped_moves
+                    if debug_mode:
+                        print(f"PAR TRAJECTORY DEBUG: Found {len(remapped_moves)} moves, remapped to real IDs")
+                        for i, mv in enumerate(remapped_moves[:5]):  # Show first 5 moves
+                            print(f"  Move {i}: agent_id={getattr(mv, 'id', 'N/A')}, di={getattr(mv, 'di', 'N/A')}, dj={getattr(mv, 'dj', 'N/A')}")
+                else:
+                    if debug_mode:
+                        print(f"PAR TRAJECTORY DEBUG: No agents_moves found in solver")
+            except Exception as e:
+                if debug_mode:
+                    print(f"PAR TRAJECTORY DEBUG: Error processing moves: {e}")
+                pass
+
+            # Minimal solver diagnostics
+            try:
+                debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
+            except Exception:
+                debug_mode = False
+            if debug_mode:
+                moves_cnt = len(getattr(self.pnr_solver, 'agents_moves', []) or [])
+                paths_cnt = len(getattr(self.pnr_solver, 'agents_paths', []) or [])
+                succ_flag = getattr(result, 'success', None)
+                print(f"PAR DIAG RESULT: api={chosen_api} success={succ_flag} moves={moves_cnt} paths={paths_cnt}")
             
             # Log detailed PAR solver information if logger is available
             if hasattr(self, 'logger') and self.logger:
@@ -157,34 +489,33 @@ class PARCoordinator:
                             agent_id = actor_set[i].id if hasattr(actor_set[i], 'id') else i
                             # print(f"   Agent {agent_id}: {len(path)} path points")
                 
-                # Copy moves from solver to result for compatibility
-                if hasattr(self.pnr_solver, 'agents_moves'):
-                    result.agents_moves = self.pnr_solver.agents_moves.copy()
-                
+                # agents_moves already attached above before logging; keep as-is
                 return result
             else:
                 # print(f"   ❌ PNR solver failed or returned no solution")
-                # Fall back to simple solution
-                fallback_result = self._generate_fallback_solution(start_positions, goal_positions)
+                # Disable fallback: return empty unsuccessful result for focused PAR debugging
+                empty_result = MAPFSearchResult()
+                empty_result.success = False
+                empty_result.agents_moves = []
                 
-                # Log fallback solution details if logger is available
                 if hasattr(self, 'logger') and self.logger:
-                    self.logger.log_par_solver_details(par_solver_input, fallback_result, list(start_positions.keys()))
+                    self.logger.log_par_solver_details(par_solver_input, empty_result, list(start_positions.keys()))
                 
-                return fallback_result
-                
+                return empty_result
+            
         except Exception as e:
             # print(f"❌ Error in PNR solver: {e}")
             import traceback
             traceback.print_exc()
-            # Fall back to simple solution
-            fallback_result = self._generate_fallback_solution(start_positions, goal_positions)
+            # Disable fallback on exception: return empty unsuccessful result
+            empty_result = MAPFSearchResult()
+            empty_result.success = False
+            empty_result.agents_moves = []
             
-            # Log fallback solution details if logger is available
             if hasattr(self, 'logger') and self.logger:
-                self.logger.log_par_solver_details(par_solver_input, fallback_result, list(start_positions.keys()))
+                self.logger.log_par_solver_details(par_solver_input, empty_result, list(start_positions.keys()))
             
-            return fallback_result
+            return empty_result
     
     def _update_actor_set_positions(self, actor_set, start_positions: Dict, goal_positions: Dict):
         """Update actor set with proper start and goal positions."""
@@ -209,75 +540,11 @@ class PARCoordinator:
                     actor.current.y = start_pos[1]
     
     def _generate_fallback_solution(self, start_positions: Dict, goal_positions: Dict) -> MAPFSearchResult:
-        """Generate an intelligent fallback solution when PNR solver fails."""
-        # print(f"   🔄 Generating intelligent fallback solution...")
-        
+        """Disabled: Fallback solution generation is turned off to force PNR only."""
+        # Fallback disabled: return empty unsuccessful result
         result = MAPFSearchResult()
-        result.pathfound = True
+        result.success = False
         result.agents_moves = []
-        
-        # Process all agents, including start=goal ones
-        valid_agents = []
-        completed_agents = []
-        
-        for agent_id in start_positions:
-            if agent_id in goal_positions:
-                start = start_positions[agent_id]
-                goal = goal_positions[agent_id]
-                
-                # Check if start=goal (agent already at target)
-                if start == goal:
-                    # print(f"   ✅ Agent {agent_id}: start=goal, marking as completed (no movement needed)")
-                    # Generate a "stay in place" move (0, 0) to mark completion
-                    from python_pnr.node import ActorMove
-                    stay_move = ActorMove(0, 0, agent_id)
-                    result.agents_moves.append(stay_move)
-                    completed_agents.append(agent_id)
-                    continue
-                
-                # Check if goal is reachable (within reasonable distance)
-                distance = np.sqrt((goal[0] - start[0])**2 + (goal[1] - start[1])**2)
-                if distance > 10:  # Skip if goal is too far (more than 10 grid cells)
-                    # print(f"   ⚠️ Agent {agent_id}: goal too far (distance: {distance:.1f}), skipping from PAR")
-                    continue
-                
-                valid_agents.append((agent_id, start, goal, distance))
-            else:
-                # print(f"   ⚠️ Agent {agent_id}: No goal position found, skipping from PAR")
-                pass
-        
-        # Sort agents by distance (closest goals first)
-        valid_agents.sort(key=lambda x: x[3])
-        
-        # print(f"   📊 PAR Planning: {len(valid_agents)} active agents, {len(completed_agents)} already completed")
-        
-        # Generate intelligent paths for valid agents
-        for agent_id, start, goal, distance in valid_agents:
-            # Generate multi-step path instead of direct movement
-            path = self._generate_smart_path(start, goal, start_positions, goal_positions)
-            
-            if path and len(path) > 1:
-                # Convert path to moves
-                moves = self._path_to_moves(agent_id, path)
-                result.agents_moves.extend(moves)
-                # print(f"   ✅ Agent {agent_id}: {len(path)} steps path generated")
-            else:
-                # Fallback to simple move if path generation fails
-                di = goal[0] - start[0]
-                dj = goal[1] - start[1]
-                from python_pnr.node import ActorMove
-                move = ActorMove(di, dj, agent_id)
-                result.agents_moves.append(move)
-                # print(f"   🔄 Agent {agent_id}: fallback to simple move ({di}, {dj})")
-        
-        # print(f"   📈 Total moves generated: {len(result.agents_moves)}")
-        if completed_agents:
-            # print(f"   🎯 Completed agents (start=goal): {completed_agents}")
-            pass
-        if valid_agents:
-            # print(f"   🚀 Active agents with paths: {[agent[0] for agent in valid_agents]}")
-            pass
-        
         return result
     
     def _generate_smart_path(self, start: Tuple[int, int], goal: Tuple[int, int], 
@@ -452,6 +719,30 @@ class PARCoordinator:
         if self.current_par_solution is None:
             return []
         
+        # First, try to get path from paths (PNR original output)
+        if hasattr(self.current_par_solution, 'paths') and self.current_par_solution.paths:
+            # Try both string and integer keys
+            for agent_key in [str(agent_id), agent_id]:
+                if agent_key in self.current_par_solution.paths:
+                    path = self.current_par_solution.paths[agent_key]
+                    if path:
+                        try:
+                            # If solver ran on cropped local grid, restore to global grid using grid_offset
+                            if hasattr(self.current_par_solution, 'grid_offset') and self.current_par_solution.grid_offset:
+                                ox, oy = self.current_par_solution.grid_offset
+                                adjusted = []
+                                for pt in path:
+                                    if hasattr(pt, 'x') and hasattr(pt, 'y'):
+                                        adjusted.append((pt.x + ox, pt.y + oy))
+                                    else:
+                                        adjusted.append((pt[0] + ox, pt[1] + oy))
+                                print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {adjusted[:5]}...")
+                                return adjusted
+                        except Exception:
+                            pass
+                        print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {path[:5]}...")
+                        return path
+        
         # Extract path for the specific agent from the PAR solution
         # This depends on the structure of MAPFSearchResult
         if hasattr(self.current_par_solution, 'get_agent_path'):
@@ -459,6 +750,7 @@ class PARCoordinator:
         
         # Fallback: try to extract from agents_moves if available
         if hasattr(self.current_par_solution, 'agents_moves'):
+            print(f"PAR COORDINATOR: Using reconstructed path from moves for agent {agent_id}")
             return self.extract_path_from_moves(agent_id)
         
         return []
@@ -492,8 +784,11 @@ class PARCoordinator:
         
         # Follow moves to reconstruct path
         for move in self.current_par_solution.agents_moves:
-            if move.agent_id == agent_id:
-                new_pos = (current_pos[0] + move.dx, current_pos[1] + move.dy)
+            if getattr(move, 'id', None) == agent_id:
+                # ActorMove uses di/dj naming where di=row_increment, dj=col_increment
+                # In RL coordinate system: x=col, y=row, so dj->x, di->y
+                new_pos = (current_pos[0] + getattr(move, 'dj', 0),  # dj is column increment -> x
+                           current_pos[1] + getattr(move, 'di', 0))  # di is row increment -> y
                 path.append(new_pos)
                 current_pos = new_pos
         
@@ -731,19 +1026,46 @@ class PARCoordinator:
     def get_workspace_info(self, agent_states: Dict) -> Dict:
         """
         Extract workspace information from agent states.
+        Use YAML config world dimensions directly from env_base.
         
         Args:
             agent_states: Dictionary of all agent states
             
         Returns:
-            Dict: Workspace information
+            Dict: Workspace information with YAML world bounds
         """
-        # This is a simplified implementation
-        # In a real system, you would extract workspace information from the environment
+        # Get world dimensions from gym_env (loaded from YAML by env_base)
+        width = float(self.gym_env._env_base__width)  # world_width from YAML
+        height = float(self.gym_env._env_base__height)  # world_height from YAML
+        offset_x = float(self.gym_env.offset_x)
+        offset_y = float(self.gym_env.offset_y)
+        
+        bounds = {
+            'min_x': offset_x,
+            'min_y': offset_y,
+            'max_x': offset_x + width,
+            'max_y': offset_y + height
+        }
+
+        # Enrich workspace with obstacle map if available
+        map_matrix = None
+        xy_reso = None
+        try:
+            if hasattr(self.gym_env, 'components') and isinstance(self.gym_env.components, dict):
+                map_matrix = self.gym_env.components.get('map_matrix', None)
+            if hasattr(self.gym_env, 'xy_reso'):
+                xy_reso = float(getattr(self.gym_env, 'xy_reso'))
+        except Exception:
+            pass
+        
         workspace = {
-            'bounds': self.compute_workspace_bounds(agent_states),
+            'bounds': bounds,
             'obstacles': self._get_environment_obstacles(),
-            'grid_resolution': self.config.get('GRID_RESOLUTION', 1.0)
+            'grid_resolution': self.config.get('GRID_RESOLUTION', 1.0),
+            'map_matrix': map_matrix,
+            'xy_reso': xy_reso,
+            'offset_x': getattr(self.gym_env, 'offset_x', 0.0),
+            'offset_y': getattr(self.gym_env, 'offset_y', 0.0)
         }
         
         return workspace
@@ -753,21 +1075,38 @@ class PARCoordinator:
         try:
             # Try to get obstacles from the gym environment
             if hasattr(self, 'gym_env') and self.gym_env:
-                # Get obstacles from gym environment components
-                if hasattr(self.gym_env, 'components') and 'obstacles' in self.gym_env.components:
-                    obstacles = self.gym_env.components['obstacles']
-                    # print(f"🔍 PAR COORDINATOR: Found {len(obstacles)} obstacles in gym environment")
-                    return obstacles
+                # Prefer extracting from known simulator components
+                if hasattr(self.gym_env, 'components') and isinstance(self.gym_env.components, dict):
+                    comp = self.gym_env.components
+                    obstacles: List = []
+                    # Polygons
+                    try:
+                        if 'obs_polygons' in comp and hasattr(comp['obs_polygons'], 'obs_poly_list'):
+                            obstacles.extend(list(comp['obs_polygons'].obs_poly_list))
+                    except Exception:
+                        pass
+                    # Circles
+                    try:
+                        if 'obs_circles' in comp and hasattr(comp['obs_circles'], 'obs_cir_list'):
+                            obstacles.extend(list(comp['obs_circles'].obs_cir_list))
+                    except Exception:
+                        pass
+                    # If an explicit obstacles list exists, include it as well
+                    try:
+                        if 'obstacles' in comp and isinstance(comp['obstacles'], list):
+                            obstacles.extend(comp['obstacles'])
+                    except Exception:
+                        pass
+                    if len(obstacles) > 0:
+                        return obstacles
                 
-                # Try alternative obstacle access methods
+                # Try alternative obstacle access methods as fallbacks
                 if hasattr(self.gym_env, 'world') and hasattr(self.gym_env.world, 'obstacles'):
                     obstacles = self.gym_env.world.obstacles
-                    # print(f"🔍 PAR COORDINATOR: Found {len(obstacles)} obstacles in gym world")
                     return obstacles
                 
                 if hasattr(self.gym_env, 'get_obstacles'):
                     obstacles = self.gym_env.get_obstacles()
-                    # print(f"🔍 PAR COORDINATOR: Found {len(obstacles)} obstacles via get_obstacles")
                     return obstacles
             
             # print(f"🔍 PAR COORDINATOR: No obstacles found in environment")
@@ -777,64 +1116,6 @@ class PARCoordinator:
             # print(f"⚠️ Warning: Could not get environment obstacles: {e}")
             return []
     
-    def compute_workspace_bounds(self, agent_states):
-        """Compute workspace bounds from agent states."""
-        # print(f"🔍 DEBUG: PARCoordinator.compute_workspace_bounds called with {len(agent_states)} agents")
-        
-        min_x = float('inf')
-        max_x = float('-inf')
-        min_y = float('inf')
-        max_y = float('-inf')
-        
-        # print(f"🔍 DEBUG: Initial bounds - min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
-        
-        for agent_id, agent_state in agent_states.items():
-            # print(f"🔍 DEBUG: Processing agent {agent_id}: {agent_state}")
-            
-            # Consider both position and goal
-            if 'position' in agent_state:
-                pos = agent_state['position']
-                # print(f"🔍 DEBUG: Agent {agent_id} position: {pos}")
-                
-                if isinstance(pos, (list, np.ndarray)) and len(pos) >= 2:
-                    x = float(pos[0][0]) if isinstance(pos[0], (list, np.ndarray)) else float(pos[0])
-                    y = float(pos[1][0]) if isinstance(pos[1], (list, np.ndarray)) else float(pos[1])
-                    
-                    # print(f"🔍 DEBUG: Agent {agent_id} extracted position: ({x}, {y})")
-                    
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, y)
-                    max_y = max(max_y, y)
-                    
-                    # print(f"🔍 DEBUG: Agent {agent_id} position updated bounds - min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
-            
-            if 'goal' in agent_state:
-                goal = agent_state['goal']
-                # print(f"🔍 DEBUG: Agent {agent_id} goal: {goal}")
-                
-                if isinstance(goal, (list, np.ndarray)) and len(goal) >= 2:
-                    x = float(goal[0][0]) if isinstance(goal[0], (list, np.ndarray)) else float(goal[0])
-                    y = float(goal[1][0]) if isinstance(goal[1], (list, np.ndarray)) else float(goal[1])
-                    
-                    # print(f"🔍 DEBUG: Agent {agent_id} extracted goal: ({x}, {y})")
-                    
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, y)
-                    max_y = max(max_y, y)
-                    
-                    # print(f"🔍 DEBUG: Agent {agent_id} goal updated bounds - min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
-        
-        bounds = {
-            'min_x': min_x,
-            'max_x': max_x,
-            'min_y': min_y,
-            'max_y': max_y
-        }
-        
-        # print(f"🔍 DEBUG: Final computed bounds: {bounds}")
-        return bounds
     
     def reset(self):
         """Reset the PAR coordinator state."""

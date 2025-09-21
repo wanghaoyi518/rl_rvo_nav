@@ -22,12 +22,12 @@ class PushAndRotateVisualizer:
         ax.set_xlim(-0.5, self.width - 0.5)
         ax.set_ylim(-0.5, self.height - 0.5)
         ax.set_aspect('equal')
-        ax.invert_yaxis()  # 使y轴从上到下递增
+        # ax.invert_yaxis()  # 移除y轴反转，使用RL坐标系（左下角原点）
         ax.grid(True, alpha=0.3)
         
         # 设置坐标轴标签
-        ax.set_xlabel('Column', fontsize=12)
-        ax.set_ylabel('Row', fontsize=12)
+        ax.set_xlabel('X (Column)', fontsize=12)
+        ax.set_ylabel('Y (Row)', fontsize=12)
         
         # 设置坐标轴刻度
         ax.set_xticks(range(self.width))
@@ -55,13 +55,13 @@ class PushAndRotateVisualizer:
         colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
         for idx, agent in enumerate(self.agents_config):
             color = colors[idx % len(colors)]
-            # 起点 - 使用统一的(i,j)坐标系统
+            # 起点 - 使用统一的RL坐标系统
             start_i = agent['start'][0]  # row (i)
             start_j = agent['start'][1]  # column (j)
             ax.scatter(start_j, start_i, marker='o', color=color, s=100, 
                       label=f"Agent {idx+1} Start" if idx==0 else None, 
                       edgecolors='black', zorder=3)
-            # 终点 - 使用统一的(i,j)坐标系统
+            # 终点 - 使用统一的RL坐标系统
             goal_i = agent['goal'][0]  # row (i)
             goal_j = agent['goal'][1]  # column (j)
             ax.scatter(goal_j, goal_i, marker='*', color=color, s=150, 
@@ -98,10 +98,10 @@ class PushAndRotateVisualizer:
             ax.set_xlim(-0.5, self.width - 0.5)
             ax.set_ylim(-0.5, self.height - 0.5)
             ax.set_aspect('equal')
-            ax.invert_yaxis()  # 使y轴从上到下递增，与静态图一致
+            # ax.invert_yaxis()  # 移除y轴反转，使用RL坐标系（左下角原点），与静态图一致
             ax.grid(True, alpha=0.3)
-            ax.set_xlabel('Column', fontsize=12)
-            ax.set_ylabel('Row', fontsize=12)
+            ax.set_xlabel('X (Column)', fontsize=12)
+            ax.set_ylabel('Y (Row)', fontsize=12)
             ax.set_xticks(range(self.width))
             ax.set_yticks(range(self.height))
             ax.set_xticklabels(range(self.width))
@@ -117,10 +117,10 @@ class PushAndRotateVisualizer:
                     pos = path[frame]
                 else:
                     pos = path[-1]
-                # 使用统一的(i,j)坐标系统 - Point.x=row(i), Point.y=col(j)
-                # 在matplotlib中：x轴=column(j), y轴=row(i)
-                # 与静态位置保持一致：ax.scatter(start_j, start_i)
-                ax.scatter(pos.y, pos.x, marker='s', color=color, s=120, edgecolors='black', zorder=4)
+                # 使用统一的RL坐标系统 - Point.x=col, Point.y=row
+                # 在matplotlib中：x轴=column, y轴=row
+                # 与RL坐标系保持一致：ax.scatter(pos.x, pos.y)
+                ax.scatter(pos.x, pos.y, marker='s', color=color, s=120, edgecolors='black', zorder=4)
             ax.set_title(f"Push-and-Rotate Step {frame+1}")
         anim = animation.FuncAnimation(fig, animate, frames=max_len, interval=2000)
         anim.save(filename, writer='pillow')

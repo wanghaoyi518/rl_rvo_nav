@@ -36,6 +36,9 @@ class ISearch:
         if constraints is None:
             constraints = set()
         
+        # Store map_obj for boundary checking in path construction
+        self.map_obj = map_obj
+        
         self.sresult.pathfound = False
         begin_time = time.time()
         
@@ -79,17 +82,26 @@ class ISearch:
                 break
             
             # 获取当前节点
-            _, current = heapq.heappop(open_set)
-            
+            # Handle both old and new tuple formats for backward compatibility
+            popped = heapq.heappop(open_set)
+            if len(popped) == 3:  # New format with tie-breaker
+                _, _, current = popped
+            else:  # Old format without tie-breaker
+                _, current = popped
+
+            # 跳过已在关闭列表中的重复节点，避免重复扩张
+            close_key = current.i * map_obj.width + current.j
+            if close_key in close_set:
+                continue
+
             # 检查是否到达目标
             if ((is_goal is not None and is_goal(start_node, current, map_obj, agent_set)) or
                 (is_goal is None and current.i == goal_i and current.j == goal_j)):
                 if self.check_goal(current, goal_time, agent_id, constraints):
                     self.sresult.pathfound = True
                     break
-            
+
             # 将当前节点加入关闭列表
-            close_key = current.i * map_obj.width + current.j
             close_set[close_key] = current
             
             # 生成后继节点
@@ -103,7 +115,13 @@ class ISearch:
                         neighbor.g = current.g + 1
                         neighbor.h = self.compute_h_from_cell_to_cell(neighbor.i, neighbor.j, goal_i, goal_j)
                         neighbor.f = neighbor.g + self.hweight * neighbor.h
-                        heapq.heappush(open_set, (neighbor.f, neighbor))
+                        # Use breakingties to ensure deterministic behavior
+                        if self.breakingties:
+                            # Add a tie-breaking value based on node position to ensure deterministic ordering
+                            tie_breaker = neighbor.i * map_obj.width + neighbor.j
+                            heapq.heappush(open_set, (neighbor.f, tie_breaker, neighbor))
+                        else:
+                            heapq.heappush(open_set, (neighbor.f, neighbor))
         
         end_time = time.time()
         self.sresult.time = end_time - begin_time
@@ -140,7 +158,7 @@ class ISearch:
         if agent_set is None:
             return False
         for agent in agent_set:
-            if agent.current.x == i and agent.current.y == j:
+            if agent.current.x == j and agent.current.y == i:
                 return True
         return False
 
@@ -149,7 +167,7 @@ class ISearch:
         if agent_set is None:
             return -1
         for agent in agent_set:
-            if agent.current.x == i and agent.current.y == j:
+            if agent.current.x == j and agent.current.y == i:
                 return agent.id
         return -1
 
@@ -168,8 +186,16 @@ class ISearch:
         successors = []
         for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
             new_i, new_j = cur_node.i + di, cur_node.j + dj
-            if (map_obj.is_traversable(new_i, new_j) and 
-                (new_i, new_j) not in occupied_nodes):
+            # DEBUG: Log boundary check details
+            in_bounds = map_obj.in_bounds(new_i, new_j) if hasattr(map_obj, 'in_bounds') else False
+            is_traversable = map_obj.is_traversable(new_i, new_j)
+            not_occupied = (new_i, new_j) not in occupied_nodes
+            
+            # Log when boundary is exceeded
+            if not in_bounds:
+                print(f"DEBUG BOUNDARY: Position ({new_i}, {new_j}) exceeds bounds - map size: {getattr(map_obj, 'width', 'unknown')}x{getattr(map_obj, 'height', 'unknown')}")
+            
+            if (is_traversable and not_occupied):
                 neighbor = Node(new_i, new_j)
                 successors.append(neighbor)
         return successors
@@ -183,8 +209,23 @@ class ISearch:
         self.lppath = []
         current = cur_node
         while current is not None:
+            # DEBUG: Check if any path node is out of bounds
+            # Use the map_obj that was passed to startSearch
+            if hasattr(self, 'map_obj') and self.map_obj:
+                if not self.map_obj.in_bounds(current.i, current.j):
+                    print(f"DEBUG PATH: Out-of-bounds node in path: ({current.i}, {current.j}) - map size: {self.map_obj.width}x{self.map_obj.height}")
             self.lppath.insert(0, current)
             current = getattr(current, 'parent', None)
+        
+        # DEBUG: Log the complete path
+        if self.lppath:
+            path_coords = [(node.i, node.j) for node in self.lppath]
+            print(f"DEBUG PATH: A* generated path with {len(path_coords)} nodes: {path_coords[:5]}...{path_coords[-5:] if len(path_coords) > 5 else path_coords}")
+            # Additional check: verify all coordinates are within bounds
+            if hasattr(self, 'map_obj') and self.map_obj:
+                for i, (node_i, node_j) in enumerate(path_coords):
+                    if not self.map_obj.in_bounds(node_i, node_j):
+                        print(f"DEBUG PATH: Path node {i} ({node_i}, {node_j}) is OUT OF BOUNDS - map size: {self.map_obj.width}x{self.map_obj.height}")
 
     def make_secondary_path(self, map_obj):
         """构建次要路径"""

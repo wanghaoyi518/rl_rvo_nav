@@ -29,11 +29,11 @@ class DeadlockConfig:
         self.default_config = {
             # Deadlock Detection Parameters
             'DEADLOCK_DETECTION_ENABLED': True,
-            'TRIGGER_TYPE': 'HYBRID',  # 'SPEED_BUFFER', 'COMMON_POINT', or 'HYBRID'
+            'TRIGGER_TYPE': 'SPEED_BUFFER',  # Use speed buffer trigger for deadlock detection
             'SMALL_SPEED': 0.2,  # Velocity threshold for deadlock detection (reduced from 0.3 to 0.2 for more sensitive detection)
-            'VELOCITY_WINDOW_SIZE': 4,  # Number of time steps for velocity averaging (reduced from 50 to 20 for faster response)
+            'VELOCITY_WINDOW_SIZE': 10,  # Number of time steps for velocity averaging (reduced from 50 to 20 for faster response)
             'MAPF_NUM': 4,  # Minimum number of agents to trigger PAR (reduced from 10 to 4 to match 8 robots)
-            'SIGHT_RADIUS': 3.0,  # Radius for detecting nearby agents (reduced from 5.0 to 3.0 for more precise detection)
+            'SIGHT_RADIUS': 7.0,  # Radius for detecting nearby agents (reduced from 5.0 to 3.0 for more precise detection)
             'EPISODE_START_DELAY': 0,  # Delay before starting deadlock detection (reduced from 50 to 5 for early detection)
             
             # Hybrid Deadlock Detection Parameters
@@ -49,16 +49,25 @@ class DeadlockConfig:
             # Collision Prevention Parameters
             'COLLISION_PREVENTION_ENABLED': True,  # Enable collision prevention detection
             'COLLISION_WARNING_DISTANCE': 2.0,  # Distance threshold for collision warning (increased for earlier detection)
-            'COLLISION_WARNING_AGENTS': 2,  # Minimum number of agents in collision warning zone
+            'COLLISION_WARNING_AGENTS': 1,  # Minimum number of agents in collision warning zone (reduced to 1 for better detection)
             
             # Immediate Speed Detection Parameters
-            'IMMEDIATE_SPEED_DETECTION_ENABLED': True,  # Enable immediate speed-based collision detection
-            'RELATIVE_SPEED_THRESHOLD': 0.6,  # Relative speed threshold for immediate detection (reduced for earlier detection)
-            'IMMEDIATE_COLLISION_DISTANCE': 2.0,  # Distance threshold for immediate collision detection (increased for earlier detection)
+            'IMMEDIATE_SPEED_DETECTION_ENABLED': False,  # Disable immediate speed-based collision detection (too sensitive)
+            'RELATIVE_SPEED_THRESHOLD': 0.8,  # Relative speed threshold for immediate detection (increased for more precise detection)
+            'IMMEDIATE_COLLISION_DISTANCE': 1.5,  # Distance threshold for immediate collision detection (reduced for more precise detection)
+
+            # Unified risk model parameters
+            'RISK_TTC_THRESHOLD': 1.0,
+            'RISK_DMIN_THRESHOLD': 0.6,
+            'RISK_WEIGHTS': {'ttc': 1.0, 'dmin': 0.5},
+            'CORE_PAIR_ONLY': True,
+            'CONSENSUS_JACCARD_THRESHOLD': 0.5,
+            'MAX_CORE_PAIRS_PER_STEP': 1,
             
             # PAR Algorithm Parameters
             'PAR_OFFSET': 2,  # Offset for expanding PAR region
-            'GRID_RESOLUTION': 0.2,  # Grid resolution for PAR environment (reduced from 0.5 to improve precision)
+            'GRID_RESOLUTION': 0.5,  # Grid resolution for PAR environment (cell-centered visualization and planning)
+            'USE_FULL_MAP': True,  # If True, discretize the full map instead of local sub-map
             'POSITION_TOLERANCE': 0.1,  # Tolerance for position matching
             'VELOCITY_SCALE': 1.0,  # Scale factor for velocity calculation
             'MAX_VELOCITY': 1.5,  # Maximum velocity limit
@@ -70,13 +79,14 @@ class DeadlockConfig:
             'GOAL_TOLERANCE': 0.5,  # Tolerance for reaching goal
             'NARROW_CORRIDOR_THRESHOLD': 4,  # Number of agents indicating narrow corridor
             'CONFINED_AREA_VELOCITY_THRESHOLD': 0.05,  # Velocity threshold for confined area
+            'PARTICIPANT_LOCK_STEPS': 5,  # Lock participant set for N steps to avoid oscillation (Experiment B)
             
             # Communication and Coordination Parameters
-            'COMMUNICATION_RANGE': 3.0,  # Communication range for agents
+            'COMMUNICATION_RANGE': 10.0,  # Communication range for agents
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
             
             # Performance and Debug Parameters
-            'DEBUG_MODE': False,  # Disable debug output to reduce console noise
+            'DEBUG_MODE': True,  # Enable debug output for PAR diagnostics
             'LOG_LEVEL': 'WARNING',  # Reduce logging level
             'SAVE_STATISTICS': False,  # Disable statistics saving to reduce I/O
             'STATISTICS_INTERVAL': 100,  # Interval for saving statistics
@@ -84,7 +94,7 @@ class DeadlockConfig:
             # Advanced Parameters
             'ENABLE_DYNAMIC_PARTICIPANTS': True,  # Allow dynamic participant addition
             'MAX_PAR_PARTICIPANTS': 10,  # Maximum number of PAR participants
-            'PAR_TIMEOUT': 500,  # Timeout for PAR execution
+            'PAR_TIMEOUT': 1000,  # Timeout for PAR execution
             'ENABLE_POSITION_SYNC': True,  # Enable position synchronization after PAR
             
             # MAPF solver parameters
@@ -308,8 +318,8 @@ class DeadlockConfig:
         
         # Check trigger type
         trigger_type = self.get('TRIGGER_TYPE')
-        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT', 'HYBRID']:
-            errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER', 'COMMON_POINT', or 'HYBRID'")
+        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT', 'HYBRID', 'UNIFIED', 'COLLISION_PREVENTION']:
+            errors.append("TRIGGER_TYPE must be one of 'SPEED_BUFFER', 'COMMON_POINT', 'HYBRID', 'UNIFIED', 'COLLISION_PREVENTION'")
         
         # Report errors
         if errors:

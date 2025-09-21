@@ -63,6 +63,20 @@ class TestVisualizer:
             return
         
         try:
+            # Prepare fallback from world_plot if available (avoids hardcoded 10x10)
+            fallback_bounds = None
+            try:
+                if hasattr(self.env, 'ir_gym') and hasattr(self.env.ir_gym, 'world_plot'):
+                    wp = self.env.ir_gym.world_plot
+                    width = float(getattr(wp, 'width', 0.0)) if hasattr(wp, 'width') else 0.0
+                    height = float(getattr(wp, 'height', 0.0)) if hasattr(wp, 'height') else 0.0
+                    offset_x = float(getattr(wp, 'offset_x', 0.0)) if hasattr(wp, 'offset_x') else float(getattr(self.env.ir_gym, 'offset_x', 0.0))
+                    offset_y = float(getattr(wp, 'offset_y', 0.0)) if hasattr(wp, 'offset_y') else float(getattr(self.env.ir_gym, 'offset_y', 0.0))
+                    if width > 0.0 and height > 0.0:
+                        fallback_bounds = [offset_x, offset_y, offset_x + width, offset_y + height]
+            except Exception:
+                fallback_bounds = None
+
             # Get map bounds from environment
             if hasattr(self.env.ir_gym, 'components'):
                 # Extract workspace bounds
@@ -76,11 +90,11 @@ class TestVisualizer:
                         self.map_bounds = [center_x - radius, center_y - radius, 
                                          center_x + radius, center_y + radius]
                     else:
-                        self.map_bounds = [0, 0, 10, 10] # Default if no specific bounds
+                        self.map_bounds = fallback_bounds if fallback_bounds else [0, 0, 10, 10]
                 else:
-                    self.map_bounds = [0, 0, 10, 10] # Default if no workspace component
+                    self.map_bounds = fallback_bounds if fallback_bounds else [0, 0, 10, 10]
             else:
-                self.map_bounds = [0, 0, 10, 10] # Default if no components
+                self.map_bounds = fallback_bounds if fallback_bounds else [0, 0, 10, 10]
 
         except Exception as e:
             print(f"Warning: Could not extract map bounds: {e}")
@@ -230,20 +244,19 @@ class TestVisualizer:
         # Set up the figure and axis
         fig, ax = plt.subplots(figsize=(12, 10))
         
-        # Set map bounds
+        # Set map bounds without extra margins (edges coincide with bounds)
         if self.map_bounds:
-            ax.set_xlim(self.map_bounds[0] - 1, self.map_bounds[2] + 1)
-            ax.set_ylim(self.map_bounds[1] - 1, self.map_bounds[3] + 1)
+            ax.set_xlim(self.map_bounds[0], self.map_bounds[2])
+            ax.set_ylim(self.map_bounds[1], self.map_bounds[3])
         else:
-            # Auto-scale based on agent positions
+            # Auto-scale based on agent positions (no margins)
             all_positions = []
             for step in steps:
                 all_positions.extend(step['robot_positions'])
             if all_positions:
                 positions = np.array(all_positions)
-                margin = 2.0
-                ax.set_xlim(positions[:, 0].min() - margin, positions[:, 0].max() + margin)
-                ax.set_ylim(positions[:, 1].min() - margin, positions[:, 1].max() + margin)
+                ax.set_xlim(positions[:, 0].min(), positions[:, 0].max())
+                ax.set_ylim(positions[:, 1].min(), positions[:, 1].max())
         
         # Get start and goal positions from episode data
         start_positions = episode_data.get('start_positions', [])

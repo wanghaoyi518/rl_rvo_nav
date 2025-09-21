@@ -499,3 +499,20 @@ class StateManager:
         """
         self.agent_states.clear()
         # print("🔄 StateManager: Reset all agent states for new episode")
+    
+    def force_reset_all_agents_to_rl_rvo(self, num_agents: int = 10):
+        """
+        Force reset all agents to rl_rvo mode for a new episode.
+        This ensures all agents start in rl_rvo mode regardless of previous state.
+        
+        Args:
+            num_agents: Number of agents to reset (default: 10)
+        """
+        self.agent_states.clear()
+        
+        # Initialize all agents with default rl_rvo state
+        for agent_id in range(num_agents):
+            self.agent_states[agent_id] = self.default_state.copy()
+            self.agent_states[agent_id]['mode'] = 'rl_rvo'
+        
+        # print(f"🔄 StateManager: Force reset {num_agents} agents to rl_rvo mode")

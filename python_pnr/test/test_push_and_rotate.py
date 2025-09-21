@@ -2,8 +2,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from map_config_2 import MAP_CONFIG
-# from map_config_cplx import MAP_CONFIG
+# from map_config_2 import MAP_CONFIG
+from map_config_cplx import MAP_CONFIG  # pyright: ignore[reportMissingImports]
 from python_pnr.sub_map import SubMap
 from python_pnr.actor import Actor
 from python_pnr.actor_set import ActorSet
@@ -26,15 +26,15 @@ def run_push_and_rotate(map_config):
     
     print("\n=== Agent配置分析 ===")
     for agent in agents:
-        # 颠倒x和y轴：地图配置中 (row, col) 对应 Point(x=row, y=col)
-        start = Point(agent["start"][0], agent["start"][1])  # (row, col) -> (x=row, y=col)
-        goal = Point(agent["goal"][0], agent["goal"][1])     # (row, col) -> (x=row, y=col)
+        # Agent 坐标是 (x, y) 格式，直接对应 Point(x, y)
+        start = Point(agent["start"][0], agent["start"][1])  # (x, y) -> Point(x, y)
+        goal = Point(agent["goal"][0], agent["goal"][1])     # (x, y) -> Point(x, y)
         
         print(f"Agent {agent['id']}:")
         print(f"  配置: start={agent['start']}, goal={agent['goal']}")
         print(f"  转换: start=Point({start.x},{start.y}), goal=Point({goal.x},{goal.y})")
-        print(f"  起始位置可通行: {sub_map.is_traversable(start.x, start.y)}")
-        print(f"  目标位置可通行: {sub_map.is_traversable(goal.x, goal.y)}")
+        print(f"  起始位置可通行: {sub_map.is_traversable(start.y, start.x)}")
+        print(f"  目标位置可通行: {sub_map.is_traversable(goal.y, goal.x)}")
         
         actor_set.add_actor(Actor(agent["id"], start, goal))
     
@@ -95,8 +95,19 @@ def run_push_and_rotate(map_config):
                 # 如果某个agent没有路径，创建一个空路径
                 ordered_paths.append([])
         
+        # 为可视化准备agents配置，转换为可视化期望的格式
+        # 可视化代码期望 [row, col] 格式，但 agent 配置是 (x, y) 格式
+        # 需要转换：(x, y) -> [y, x] 即 (col, row) -> [row, col]
+        vis_agents = []
+        for agent in agents:
+            vis_agents.append({
+                'id': agent['id'],
+                'start': [agent['start'][1], agent['start'][0]],  # (x, y) -> [y, x] 即 [row, col]
+                'goal': [agent['goal'][1], agent['goal'][0]]      # (x, y) -> [y, x] 即 [row, col]
+            })
+        
         visualize_push_and_rotate_result(
-            grid, agents, ordered_paths,
+            grid, vis_agents, ordered_paths,
             png_filename=os.path.join(vis_dir, f"test_result_{timestamp}.png"),
             gif_filename=os.path.join(vis_dir, f"test_animation_{timestamp}.gif")
         )
