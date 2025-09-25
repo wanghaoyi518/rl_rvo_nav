@@ -35,26 +35,6 @@ class DeadlockConfig:
             'MAPF_NUM': 4,  # Minimum number of agents to trigger PAR (reduced from 10 to 4 to match 8 robots)
             'SIGHT_RADIUS': 7.0,  # Radius for detecting nearby agents (reduced from 5.0 to 3.0 for more precise detection)
             'EPISODE_START_DELAY': 0,  # Delay before starting deadlock detection (reduced from 50 to 5 for early detection)
-            
-            # Hybrid Deadlock Detection Parameters
-            'HYBRID_MODE': 'OR',  # 'AND' or 'OR' - how to combine speed buffer and common point triggers (changed to OR for less strict detection)
-            'SPEED_BUFFER_WEIGHT': 0.6,  # Weight for speed buffer trigger in hybrid mode
-            'COMMON_POINT_WEIGHT': 0.4,  # Weight for common point trigger in hybrid mode
-            
-            # Enhanced Speed Buffer Parameters
-            'SPEED_BUFFER_AVG_THRESHOLD': 0.1,  # Average velocity threshold over time window
-            'SPEED_BUFFER_MAX_THRESHOLD': 0.2,  # Maximum velocity threshold over time window
-            'SPEED_BUFFER_MIN_HISTORY_RATIO': 0.5 ,  # Minimum ratio of history data required (0.8 = 80%)
-            
-            # Collision Prevention Parameters
-            'COLLISION_PREVENTION_ENABLED': True,  # Enable collision prevention detection
-            'COLLISION_WARNING_DISTANCE': 2.0,  # Distance threshold for collision warning (increased for earlier detection)
-            'COLLISION_WARNING_AGENTS': 1,  # Minimum number of agents in collision warning zone (reduced to 1 for better detection)
-            
-            # Immediate Speed Detection Parameters
-            'IMMEDIATE_SPEED_DETECTION_ENABLED': False,  # Disable immediate speed-based collision detection (too sensitive)
-            'RELATIVE_SPEED_THRESHOLD': 0.8,  # Relative speed threshold for immediate detection (increased for more precise detection)
-            'IMMEDIATE_COLLISION_DISTANCE': 1.5,  # Distance threshold for immediate collision detection (reduced for more precise detection)
 
             # Unified risk model parameters
             'RISK_TTC_THRESHOLD': 1.0,
@@ -318,8 +298,8 @@ class DeadlockConfig:
         
         # Check trigger type
         trigger_type = self.get('TRIGGER_TYPE')
-        if trigger_type not in ['SPEED_BUFFER', 'COMMON_POINT', 'HYBRID', 'UNIFIED', 'COLLISION_PREVENTION']:
-            errors.append("TRIGGER_TYPE must be one of 'SPEED_BUFFER', 'COMMON_POINT', 'HYBRID', 'UNIFIED', 'COLLISION_PREVENTION'")
+        if trigger_type not in ['SPEED_BUFFER', 'UNIFIED']:
+            errors.append("TRIGGER_TYPE must be one of 'SPEED_BUFFER', 'UNIFIED'")
         
         # Report errors
         if errors:

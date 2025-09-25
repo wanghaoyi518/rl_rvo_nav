@@ -565,25 +565,42 @@ class ir_gym(env_base):
                         if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
                             self.deadlock_logger.log_par_execution(agent_id, par_action['action'], 'executing')
                     
-                    # Only use executor's path progress to determine exit from PAR
+                    # Group exit policy: only exit PAR when ALL current PAR participants are complete
                     progress = self.par_executor.get_path_progress(agent_id) if hasattr(self.par_executor, 'get_path_progress') else {
                         'is_complete': False
                     }
-                    if progress.get('is_complete', False):
+                    all_participants_complete = False
+                    try:
+                        current_par_agents = []
+                        for aid2 in range(len(self.robot_list)):
+                            if self.get_current_mode(aid2) == 'par':
+                                current_par_agents.append(aid2)
+                        if len(current_par_agents) > 0:
+                            all_participants_complete = True
+                            for pid in current_par_agents:
+                                other_progress = self.par_executor.get_path_progress(pid) if hasattr(self.par_executor, 'get_path_progress') else {'is_complete': False}
+                                if not other_progress.get('is_complete', False):
+                                    all_participants_complete = False
+                                    break
+                    except Exception:
+                        all_participants_complete = False
+
+                    if progress.get('is_complete', False) and all_participants_complete:
                         old_mode = self.get_current_mode(agent_id)
                         self.state_manager.set_rl_rvo_mode(agent_id)
                         
                         # Log agent positions when switching from MAPF back to RL
                         if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
                             agent_positions = {}
-                            for participant_id in self.deadlock_detector.get_deadlock_participants(agent_id, agent_states, {}):
+                            for participant_id in current_par_agents:
                                 if participant_id in agent_states:
                                     agent_state = agent_states[participant_id]
                                     if 'position' in agent_state:
                                         agent_positions[participant_id] = agent_state['position']
                             
-                            self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "PAR execution completed")
-                            self.deadlock_logger.log_par_completion(agent_id, progress.get('current_index', 0))
+                            self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "All PAR participants completed")
+                            agent_idx = progress.get('current_index', 0)
+                            self.deadlock_logger.log_par_completion(agent_id, agent_idx)
                             self.deadlock_logger.log_mapf_to_rl_positions(agent_positions)
                 except Exception as e:
                     print(f"❌ PAR execution failed for agent {agent_id}: {e}")
@@ -619,51 +636,54 @@ class ir_gym(env_base):
                         continue
                 applied_positions = {}
 
-                # Immediate early-exit if current overlap already exists (粘性碰撞解除)
-                try:
-                    for aid in range(len(self.robot_list)):
-                        try:
-                            if self.get_current_mode(aid) != 'par':
-                                continue
-                        except Exception:
-                            continue
-                        r_i = radii.get(aid, 0.2)
-                        pos_i = current_positions.get(aid)
-                        if pos_i is None:
-                            continue
-                        overlapped = False
-                        for other_id in range(len(self.robot_list)):
-                            if other_id == aid:
-                                continue
-                            pos_j = current_positions.get(other_id)
-                            if pos_j is None:
-                                continue
-                            r_j = radii.get(other_id, 0.2)
-                            dx = pos_i[0] - pos_j[0]
-                            dy = pos_i[1] - pos_j[1]
-                            if (dx*dx + dy*dy) ** 0.5 < (r_i + r_j):
-                                overlapped = True
-                                blocker = other_id
-                                break
-                        if overlapped:
-                            # Early exit PAR immediately for this agent
-                            try:
-                                old_mode = self.get_current_mode(aid)
-                                if hasattr(self, 'step_count'):
-                                    self._par_cooldown_until[aid] = int(self.step_count) + cooldown_steps
-                                if hasattr(self, 'state_manager') and self.state_manager:
-                                    self.state_manager.set_rl_rvo_mode(aid)
-                                if hasattr(self, 'par_executor') and hasattr(self.par_executor, 'reset_agent'):
-                                    self.par_executor.reset_agent(aid)
-                                if aid in self._par_last_set_positions:
-                                    del self._par_last_set_positions[aid]
-                                if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                                    self.deadlock_logger.log_mode_switch(aid, old_mode, 'rl_rvo', 'par_early_exit_overlap')
-                                print(f"PAR EARLY EXIT: Agent {aid} -> rl_rvo due to existing overlap with agent {blocker}")
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+                # Disabled: Immediate early-exit if current overlap already exists
+                # This was causing premature PAR exits. PAR algorithm should handle overlaps.
+                # try:
+                #     for aid in range(len(self.robot_list)):
+                #         try:
+                #             if self.get_current_mode(aid) != 'par':
+                #                 continue
+                #         except Exception:
+                #             continue
+                #         r_i = radii.get(aid, 0.2)
+                #         pos_i = current_positions.get(aid)
+                #         if pos_i is None:
+                #             continue
+                #         overlapped = False
+                #         for other_id in range(len(self.robot_list)):
+                #             if other_id == aid:
+                #                 continue
+                #             pos_j = current_positions.get(other_id)
+                #             if pos_j is None:
+                #                 continue
+                #             r_j = radii.get(other_id, 0.2)
+                #             dx = pos_i[0] - pos_j[0]
+                #             dy = pos_i[1] - pos_j[1]
+                #             # Add tolerance to avoid premature exit due to minor overlaps
+                #             overlap_tolerance = 0.1  # 10cm tolerance
+                #             if (dx*dx + dy*dy) ** 0.5 < (r_i + r_j + overlap_tolerance):
+                #                 overlapped = True
+                #                 blocker = other_id
+                #                 break
+                #         if overlapped:
+                #             # Early exit PAR immediately for this agent
+                #             try:
+                #                 old_mode = self.get_current_mode(aid)
+                #                 if hasattr(self, 'step_count'):
+                #                     self._par_cooldown_until[aid] = int(self.step_count) + cooldown_steps
+                #                 if hasattr(self, 'state_manager') and self.state_manager:
+                #                     self.state_manager.set_rl_rvo_mode(aid)
+                #                 if hasattr(self, 'par_executor') and hasattr(self.par_executor, 'reset_agent'):
+                #                     self.par_executor.reset_agent(aid)
+                #                 if aid in self._par_last_set_positions:
+                #                     del self._par_last_set_positions[aid]
+                #                 if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                #                     self.deadlock_logger.log_mode_switch(aid, old_mode, 'rl_rvo', 'par_early_exit_overlap')
+                #                 print(f"PAR EARLY EXIT: Agent {aid} -> rl_rvo due to existing overlap with agent {blocker}")
+                #             except Exception:
+                #                 pass
+                # except Exception:
+                #     pass
 
                 for aid, meta in list(self._par_last_set_positions.items()):
                     pos = meta['pos'] if isinstance(meta, dict) else meta
@@ -688,18 +708,9 @@ class ir_gym(env_base):
                                 break
 
                         if blocked:
-                            # Do not apply; roll back executor path index so next step重试当前waypoint
-                            try:
-                                if hasattr(self, 'par_executor') and hasattr(self.par_executor, 'agent_paths'):
-                                    pi = None
-                                    if isinstance(meta, dict):
-                                        pi = meta.get('path_index')
-                                    if pi is None:
-                                        pi = self.par_executor.agent_paths.get(aid, 1) - 1
-                                    self.par_executor.agent_paths[aid] = max(int(pi), 0)
-                            except Exception:
-                                pass
-                            print(f"PAR BLOCKED: Agent {aid} at waypoint {meta.get('path_index', '?')} by agent {blocker}, not advancing")
+                            # In PAR algorithm, blocking should be handled by push-and-rotate mechanism
+                            # Don't roll back path index - let PAR algorithm resolve the conflict
+                            print(f"PAR BLOCKED: Agent {aid} at waypoint {meta.get('path_index', '?')} by agent {blocker}, but continuing PAR execution")
                             
                             # Even if blocked, still set position to prevent RL dynamics from modifying it
                             # Keep the agent at its current PAR position to maintain PAR trajectory

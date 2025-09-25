@@ -2,6 +2,7 @@
 #   world_height: 10
 #   world_width: 10
 #   step_time: 0.1
+#   grid_resolution: 0.5
 
 # robots:
 #   robot_number: 4
@@ -18,6 +19,40 @@
 #     - [7.0, 6.0, 0.0]
 #     - [7.0, 8.0, 0.0]
 #   radius_list: [0.2, 0.2, 0.2, 0.2]
+#   vel_max: [1.5, 1.5]
+#   radius_exp: 0.1
+
+# obs_polygons:
+#   number: 2
+#   vertexes_list:
+#     - [[4.9, 10.0], [5.1, 10.0], [5.1, 6.0], [4.9, 6.0]]
+#     - [[4.9, 4.0], [5.1, 4.0], [5.1, 0.0], [4.9, 0.0]]
+
+# world:
+#   world_height: 10
+#   world_width: 10
+#   step_time: 0.1
+#   grid_resolution: 0.5
+
+# robots:
+#   robot_number: 6
+#   robot_mode: 'diff'
+#   init_mode: 8
+#   init_state_list:
+#     - [3.0, 2.0, 0]
+#     - [3.0, 3.0, 0]
+#     - [3.0, 4.0, 0]
+#     - [3.0, 6.0, 0]
+#     - [3.0, 7.0, 0]
+#     - [3.0, 8.0, 0]
+#   goal_list:
+#     - [7.0, 2.0, 0.0]
+#     - [7.0, 3.0, 0.0]
+#     - [7.0, 4.0, 0.0]
+#     - [7.0, 6.0, 0.0]
+#     - [7.0, 7.0, 0.0]
+#     - [7.0, 8.0, 0.0]
+#   radius_list: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
 #   vel_max: [1.5, 1.5]
 #   radius_exp: 0.1
 
@@ -49,6 +84,40 @@ robots:
     - [12.0, 6.0, 0.0]
     - [12.0, 8.0, 0.0]
   radius_list: [0.2, 0.2, 0.2, 0.2]
+  vel_max: [1.5, 1.5]
+  radius_exp: 0.1
+
+obs_polygons:
+  number: 2
+  vertexes_list:
+    - [[4.9, 10.0], [10.1, 10.0], [10.1, 6.0], [4.9, 6.0]]
+    - [[4.9, 4.0], [10.1, 4.0], [10.1, 0.0], [4.9, 0.0]]
+
+world:
+  world_height: 10
+  world_width: 15
+  step_time: 0.1
+  xy_resolution: 0.5
+
+robots:
+  robot_number: 4
+  robot_mode: 'diff'
+  init_mode: 8
+  init_state_list:
+    - [3.0, 2.0, 0]
+    - [3.0, 3.0, 0]
+    - [3.0, 4.0, 0]
+    - [3.0, 6.0, 0]
+    - [3.0, 7.0, 0]
+    - [3.0, 8.0, 0]
+  goal_list:
+    - [12.0, 2.0, 0.0]
+    - [12.0, 3.0, 0.0]
+    - [12.0, 4.0, 0.0]
+    - [12.0, 6.0, 0.0]
+    - [12.0, 7.0, 0.0]  
+    - [12.0, 8.0, 0.0]
+  radius_list: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
   vel_max: [1.5, 1.5]
   radius_exp: 0.1
 

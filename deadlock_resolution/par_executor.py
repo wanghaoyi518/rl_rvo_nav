@@ -30,7 +30,7 @@ class PARExecutor:
         self.velocity_scale = config.get('VELOCITY_SCALE', 1.0)
         self.max_velocity = config.get('MAX_VELOCITY', 1.5)
         # Substep execution for each grid edge (e.g., 0.5 grid split into n substeps)
-        self.substeps_per_grid = config.get('PAR_SUBSTEPS_PER_GRID', 5)
+        self.substeps_per_grid = config.get('PAR_SUBSTEPS_PER_GRID', 10)
         self.agent_substep_index = {}
         
         # Execution state tracking
@@ -205,7 +205,7 @@ class PARExecutor:
         next_xy = self.par_coordinator.par_environment.grid_to_continuous(next_grid)
 
         # Substep interpolation between prev_xy -> next_xy
-        n = int(self.substeps_per_grid) if hasattr(self, 'substeps_per_grid') else 5
+        n = int(self.substeps_per_grid) if hasattr(self, 'substeps_per_grid') else 10
         sub_idx = int(self.agent_substep_index.get(agent_id, 0))
         alpha = float(sub_idx + 1) / float(max(n, 1))
         pos_x = prev_xy[0] + alpha * (next_xy[0] - prev_xy[0])
@@ -641,12 +641,20 @@ class PARExecutor:
         
         progress_percentage = (path_index / total_length * 100) if total_length > 0 else 0
         
+        # Debug: print when agent has no path
+        if total_length == 0:
+            print(f"PAR EXECUTOR DEBUG: Agent {agent_id} has no path (total_length=0)")
+            print(f"  _agent_full_paths exists: {hasattr(self, '_agent_full_paths')}")
+            if hasattr(self, '_agent_full_paths'):
+                print(f"  _agent_full_paths keys: {list(self._agent_full_paths.keys())}")
+                print(f"  agent_id in _agent_full_paths: {agent_id in self._agent_full_paths}")
+        
         return {
             'agent_id': agent_id,
             'current_index': path_index,
             'total_length': total_length,
             'progress_percentage': progress_percentage,
-            'is_complete': path_index >= total_length if total_length > 0 else True
+            'is_complete': path_index >= total_length if total_length > 0 else False
         }
     
     def is_par_complete(self, agent_id: int) -> bool:
@@ -666,13 +674,15 @@ class PARExecutor:
         # Check if agent has completed its path
         current_path_index = self.agent_paths[agent_id]
         
-        # Get the agent's path
-        if agent_id in self.agent_paths:
-            # For now, consider complete if agent has been executing for a while
-            # In practice, this should track actual path progress
-            if current_path_index >= 5:  # Simple threshold for testing
-                # print(f"🔄 PAR Executor: Agent {agent_id} completed path execution")
-                return True
+        # Get the agent's full path length
+        total_path_length = 0
+        if hasattr(self, '_agent_full_paths') and agent_id in self._agent_full_paths:
+            total_path_length = len(self._agent_full_paths[agent_id])
+        
+        # Complete if we've reached the end of the path
+        if total_path_length > 0 and current_path_index >= total_path_length:
+            # print(f"🔄 PAR Executor: Agent {agent_id} completed path execution ({current_path_index}/{total_path_length})")
+            return True
         
         return False
     

@@ -47,10 +47,10 @@ parser.add_argument('--world_name', default='mode8_static_corridor.yaml')  # Sta
 
 parser.add_argument('--render', action='store_true')
 # Stage 4 使用10个机器人
-parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--robot_number', type=int, default='6')
 parser.add_argument('--num_episodes', type=int, default='1')
 # Mode 7: random with distance constraint + random polygons
-parser.add_argument('--dis_mode', type=int, default='8')  # 7 for Mode 7
+parser.add_argument('--dis_mode', type=int, default='8')  
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--show_traj', action='store_true')
@@ -87,5 +87,5 @@ policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(p
 if policy_args.enable_deadlock_resolution:
     policy_name += '_with_deadlock'
 
-pt = post_train_with_deadlock(env, num_episodes=policy_args.num_episodes, reset_mode=policy_args.dis_mode, render=policy_args.render, std_factor=0.00001, acceler_vel=1.0, max_ep_len=300, neighbors_region=args.neighbors_region, neighbor_num=args.neighbors_num, args=args, save=policy_args.save, show_traj=policy_args.show_traj, figure_format='eps')
+pt = post_train_with_deadlock(env, num_episodes=policy_args.num_episodes, reset_mode=policy_args.dis_mode, render=policy_args.render, std_factor=0.00001, acceler_vel=1.0, max_ep_len=500, neighbors_region=args.neighbors_region, neighbor_num=args.neighbors_num, args=args, save=policy_args.save, show_traj=policy_args.show_traj, figure_format='eps')
 pt.policy_test(policy_args.policy_type, fname_model, policy_name, result_path=str(cur_path), result_name='/result_with_deadlock.txt', figure_save_path=cur_path / 'figure_with_deadlock' , ani_save_path=cur_path / 'gif_with_deadlock', policy_dict=policy_args.policy_dict, once=policy_args.once)

@@ -293,24 +293,24 @@ class PARCoordinator:
             # print(f"🔍 PAR SOLUTION GENERATION:")
             # print(f"   Using real PNR solver (Push and Rotate)")
             
-            # Configure MAPF parameters
+            # Configure MAPF parameters - use same config as standalone test for consistency
             from python_pnr.mapf_config import MAPFConfig
-            mapf_config = MAPFConfig(
-                max_steps=self.config.get('PAR_MAX_STEPS', 1000),
-                timeout=self.config.get('PAR_TIMEOUT', 500),
-                heuristic_weight=self.config.get('PAR_HEURISTIC_WEIGHT', 1.0)
-            )
+            mapf_config = MAPFConfig(max_steps=100)
             
             # print(f"   MAPF Config: max_steps={mapf_config.max_steps}, timeout={mapf_config.timeout}, heuristic_weight={mapf_config.heuristic_weight}")
             
             # Update actor set with proper start and goal positions
             self._update_actor_set_positions(actor_set, start_positions, goal_positions)
 
-            # Remap real agent ids -> solver-local contiguous ids [0..k-1]
-            # Many MAPF implementations assume contiguous ids for internal arrays
+            # Remap real agent ids -> solver-local contiguous ids [0..k-1], unless disabled
             participants_real_ids = list(start_positions.keys())
-            id_real_to_solver: Dict[int, int] = {rid: idx for idx, rid in enumerate(participants_real_ids)}
-            id_solver_to_real: Dict[int, int] = {v: k for k, v in id_real_to_solver.items()}
+            disable_id_remap = bool(self.config.get('DISABLE_ID_REMAP', True))
+            if disable_id_remap:
+                id_real_to_solver: Dict[int, int] = {rid: rid for rid in participants_real_ids}
+                id_solver_to_real: Dict[int, int] = {rid: rid for rid in participants_real_ids}
+            else:
+                id_real_to_solver: Dict[int, int] = {rid: idx for idx, rid in enumerate(participants_real_ids)}
+                id_solver_to_real: Dict[int, int] = {v: k for k, v in id_real_to_solver.items()}
 
             # Build a solver-local ActorSet with contiguous ids
             from python_pnr.actor_set import ActorSet as SolverActorSet
@@ -333,13 +333,17 @@ class PARCoordinator:
                     ox, oy = 0, 0
                 s_point = SolverPoint(int(sp[0] - ox), int(sp[1] - oy))
                 g_point = SolverPoint(int(gp[0] - ox), int(gp[1] - oy))
-                solver_actor_set.add_actor(SolverActor(sid, s_point, g_point))
+                actor = SolverActor(sid, s_point, g_point)
+                # Attach real_id for downstream logging
+                try:
+                    setattr(actor, 'real_id', int(rid))
+                except Exception:
+                    pass
+                solver_actor_set.add_actor(actor)
             
             # Add solver input information to logging
             par_solver_input['mapf_config'] = {
-                'max_steps': mapf_config.max_steps,
-                'timeout': mapf_config.timeout,
-                'heuristic_weight': mapf_config.heuristic_weight
+                'max_steps': mapf_config.max_steps
             }
             
             # Add solver actor set information
@@ -347,19 +351,29 @@ class PARCoordinator:
             for actor in solver_actor_set:
                 solver_actors_info.append({
                     'id': actor.id,
+                    'real_id': getattr(actor, 'real_id', None),
                     'start': (actor.current.x, actor.current.y),
                     'goal': (actor.goal.x, actor.goal.y)
                 })
             par_solver_input['solver_actor_set'] = solver_actors_info
             
-            # Add ID mapping information
+            # Add ID mapping information (reflecting whether remap is disabled)
             par_solver_input['id_mapping'] = {
                 'real_to_solver': id_real_to_solver,
-                'solver_to_real': id_solver_to_real
+                'solver_to_real': id_solver_to_real,
+                'disabled': disable_id_remap
             }
             
-            # Call solver with the original sub_map
-            chosen_api = 'start_search'
+            # Add complete SubMap information for debugging
+            par_solver_input['sub_map_info'] = {
+                'origin_x': getattr(sub_map, 'origin_x', 0.0),
+                'origin_y': getattr(sub_map, 'origin_y', 0.0), 
+                'origin_i': getattr(sub_map, 'origin_i', 0),
+                'origin_j': getattr(sub_map, 'origin_j', 0),
+                'resolution': getattr(sub_map, 'resolution', 0.5)
+            }
+            
+            # Call solver - use same call pattern as standalone test for consistency
             result = self.pnr_solver.start_search(sub_map, mapf_config, solver_actor_set)
             
             # Store the ID mapping in the result for later use
@@ -470,7 +484,7 @@ class PARCoordinator:
                 moves_cnt = len(getattr(self.pnr_solver, 'agents_moves', []) or [])
                 paths_cnt = len(getattr(self.pnr_solver, 'agents_paths', []) or [])
                 succ_flag = getattr(result, 'success', None)
-                print(f"PAR DIAG RESULT: api={chosen_api} success={succ_flag} moves={moves_cnt} paths={paths_cnt}")
+                print(f"PAR DIAG RESULT: api=start_search success={succ_flag} moves={moves_cnt} paths={paths_cnt}")
             
             # Log detailed PAR solver information if logger is available
             if hasattr(self, 'logger') and self.logger:
@@ -927,22 +941,9 @@ class PARCoordinator:
         if len(agent_moves) == 0:
             return True
         
-        # Check if agent has executed all its moves
-        # This is a simplified check - in practice, you'd track actual execution
-        if not hasattr(self, '_par_execution_progress'):
-            self._par_execution_progress = {}
-        
-        if agent_id not in self._par_execution_progress:
-            self._par_execution_progress[agent_id] = 0
-        
-        # For now, consider complete if agent has been in PAR mode for a while
-        # In practice, this should track actual move execution
-        self._par_execution_progress[agent_id] += 1
-        completion_threshold = self.config.get('PAR_COMPLETION_THRESHOLD', 10)
-        
-        if self._par_execution_progress[agent_id] >= completion_threshold:
-            # print(f"🔄 Agent {agent_id} completed PAR path after {self._par_execution_progress[agent_id]} steps")
-            return True
+        # Use PAR executor's path progress instead of time-based detection
+        if hasattr(self, 'par_executor') and self.par_executor:
+            return self.par_executor.is_par_complete(agent_id)
         
         return False
     

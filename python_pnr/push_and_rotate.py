@@ -8,11 +8,37 @@ from .utils import CN_INFINITY
 import time
 from collections import deque, defaultdict
 import copy
+import os
+import json
+from datetime import datetime
 
 def debug_log(msg):
     with open("pnr_debug.log", "a") as f:
         f.write(msg + "\n")
     print(msg)
+
+# class PNRTraceLogger:
+#     """Lightweight JSONL trace logger for PNR runs (timestamped per run)."""
+#     def __init__(self):
+#         base_dir = os.path.dirname(__file__)
+#         self.trace_dir = os.path.join(base_dir, "pnr_traces")
+#         os.makedirs(self.trace_dir, exist_ok=True)
+#         # Use minute-level granularity so multiple calls in one run append to the same file
+#         ts = datetime.now().strftime("%Y%m%d_%H%M")
+#         self.file_path = os.path.join(self.trace_dir, f"pnr_trace_{ts}.jsonl")
+#         self._fp = open(self.file_path, "a", buffering=1)
+# 
+#     def log(self, event: dict):
+#         try:
+#             self._fp.write(json.dumps(event, ensure_ascii=False) + "\n")
+#         except Exception:
+#             pass
+# 
+#     def close(self):
+#         try:
+#             self._fp.close()
+#         except Exception:
+#             pass
 
 class PushAndRotate:
     def __init__(self, search=None):
@@ -20,6 +46,7 @@ class PushAndRotate:
         self.result = MAPFSearchResult()
         self.agents_moves = []
         self.agents_paths = []
+        # self.trace_logger = None  # created per start_search call
 
     def clear(self):
         self.agents_paths.clear()
@@ -421,6 +448,16 @@ class PushAndRotate:
                 cur_agent_id = min(not_finished)
             
             debug_log(f"步骤 {steps}: 选择Agent {cur_agent_id}, not_finished={not_finished}")
+            # Trace: step selection
+            # try:
+            #     self.trace_logger.log({
+            #         "type": "step_select",
+            #         "step": int(steps),
+            #         "agent": int(cur_agent_id),
+            #         "not_finished": [int(x) for x in sorted(list(not_finished))]
+            #     })
+            # except Exception:
+            #     pass
             
             cur_agent = actor_set.get_actor_by_id(cur_agent_id)
             if cur_agent_id not in not_finished:
@@ -436,6 +473,19 @@ class PushAndRotate:
                 occupied_set
             )
             debug_log(f"A*路径 (Agent {cur_agent_id}): {[ (n.i, n.j) for n in path ] if path else '无路径'}")
+            # Trace: astar outcome
+            # try:
+            #     self.trace_logger.log({
+            #         "type": "astar",
+            #         "step": int(steps),
+            #         "agent": int(cur_agent_id),
+            #         "start": [int(cur_agent.current.y), int(cur_agent.current.x)],
+            #         "goal": [int(cur_agent.goal.y), int(cur_agent.goal.x)],
+            #         "occupied_size": int(len(occupied_set) if occupied_set is not None else 0),
+            #         "path": [[int(n.i), int(n.j)] for n in path] if path else None
+            #     })
+            # except Exception:
+            #     pass
             if not path or len(path) < 2:
                 # 记录诊断
                 try:
@@ -562,7 +612,17 @@ class PushAndRotate:
                     cycle_beg = len(q_path) - 1
                     while cycle_beg >= 0 and q_path[cycle_beg] != next_node:
                         cycle_beg -= 1
-                    
+                    # Trace: cycle detected
+                    # try:
+                    #     self.trace_logger.log({
+                    #         "type": "cycle_detected",
+                    #         "step": int(steps),
+                    #         "agent": int(cur_agent_id),
+                    #         "cycle_beg_index": int(cycle_beg),
+                    #         "q_path_len": int(len(q_path))
+                    #     })
+                    # except Exception:
+                    #     pass
                     self.rotate(sub_map, actor_set, q_path, cycle_beg)
                     
                     # 清理循环部分
@@ -593,6 +653,17 @@ class PushAndRotate:
                                 })
                             except Exception:
                                 pass
+                            # Trace: push/swap failed
+                            # try:
+                            #     self.trace_logger.log({
+                            #         "type": "push_swap_failed",
+                            #         "step": int(steps),
+                            #         "agent": int(cur_agent_id),
+                            #         "from": [int(current_node.i), int(current_node.j)],
+                            #         "to": [int(next_node.i), int(next_node.j)]
+                            #     })
+                            # except Exception:
+                            #     pass
                             try:
                                 self.result.stats['solve_trace'] = trace
                             except Exception:
@@ -615,6 +686,19 @@ class PushAndRotate:
                         # 更新agent位置
                         a.current.x = next_node.j
                         a.current.y = next_node.i
+                        # Trace: move applied
+                        # try:
+                        #     self.trace_logger.log({
+                        #         "type": "move",
+                        #         "step": int(steps),
+                        #         "agent": int(cur_agent_id),
+                        #         "from": [int(current_node.i), int(current_node.j)],
+                        #         "to": [int(next_node.i), int(next_node.j)],
+                        #         "di": int(di),
+                        #         "dj": int(dj)
+                        #     })
+                        # except Exception:
+                        #     pass
                         break
                 q_path.append(next_node)
                 q_path_nodes.add(next_node)
@@ -1321,14 +1405,66 @@ class PushAndRotate:
         return self.agents_paths
 
     def start_search(self, sub_map: SubMap, config: MAPFConfig, actor_set: ActorSet):
+        # Create a fresh trace logger per invocation (unique timestamped file)
+        # try:
+        #     if self.trace_logger is not None:
+        #         self.trace_logger.close()
+        # except Exception:
+        #     pass
+        # self.trace_logger = PNRTraceLogger()
+
+        # Clear previous results to ensure each call is independent
         self.result = MAPFSearchResult()
+        self.agents_moves.clear()  # Clear accumulated moves from previous calls
+        self.agents_paths.clear()  # Clear accumulated paths from previous calls
         self.search = ISearch(sub_map)
         start_time = time.time()
         # 还原C++主入口完整流程
+        # Trace: initial inputs snapshot
+        # try:
+        #     grid_row_sums = [int(sum(int(v) for v in row)) for row in sub_map.grid]
+        # except Exception:
+        #     grid_row_sums = []
+        # try:
+        #     actors = []
+        #     for a in actor_set:
+        #         item = {
+        #             "id": int(a.id),
+        #             "start": [int(a.start.x), int(a.start.y)],
+        #             "goal": [int(a.goal.x), int(a.goal.y)]
+        #         }
+        #         # include real_id if present (propagated from coordinator)
+        #         if hasattr(a, 'real_id'):
+        #             try:
+        #                 item["real_id"] = int(getattr(a, 'real_id'))
+        #             except Exception:
+        #                 item["real_id"] = getattr(a, 'real_id')
+        #         actors.append(item)
+        # except Exception:
+        #     actors = []
+        # self.trace_logger.log({
+        #     "type": "init",
+        #     "sub_map": {"width": int(sub_map.width), "height": int(sub_map.height)},
+        #     "grid_row_sums": grid_row_sums,
+        #     "actors": actors,
+        #     "config": {"max_steps": int(getattr(config, "max_steps", 0))}
+        # })
+
         self.get_subgraphs(sub_map, actor_set)
         self.assign_to_subgraphs(sub_map, actor_set)
         self.get_priorities(sub_map, actor_set)
         success = self.solve(sub_map, config, actor_set)
         self.result.success = success
         self.result.runtime = time.time() - start_time
+        # Trace: final result snapshot
+        # self.trace_logger.log({
+        #     "type": "result",
+        #     "success": bool(success),
+        #     "runtime_s": float(self.result.runtime),
+        #     "agents_moves_count": int(len(self.agents_moves))
+        # })
+        # try:
+        #     self.trace_logger.close()
+        # except Exception:
+        #     pass
         return self.result 

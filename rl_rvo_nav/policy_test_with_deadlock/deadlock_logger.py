@@ -370,6 +370,7 @@ class DeadlockLogger:
                 'mapf_config': par_solver_input.get('mapf_config', {}),  # Add MAPF configuration
                 'solver_actor_set': par_solver_input.get('solver_actor_set', []),  # Add solver actor set
                 'id_mapping': par_solver_input.get('id_mapping', {}),  # Add ID mapping
+                'sub_map_info': par_solver_input.get('sub_map_info', {}),  # Add complete SubMap information
                 # map/agents summary (map_config_example-like)
                 # 'grid_numeric': None,  # Removed to reduce log size
                 'grid_pretty': None,
