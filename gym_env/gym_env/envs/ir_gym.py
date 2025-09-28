@@ -816,6 +816,42 @@ class ir_gym(env_base):
         except Exception:
             pass
 
+        # PAR-RL distance detection and forced exit logic
+        try:
+            # Dynamic safety threshold based on agent radii
+            par_radius = 0.2  # Default PAR agent radius
+            rl_radius = 0.2   # Default RL agent radius
+            safety_threshold = (par_radius + rl_radius) + 0.5  # Distance threshold for PAR-RL collision detection
+            par_agents = []
+            rl_agents = []
+            
+            # Collect PAR and RL agent positions
+            for aid in range(len(self.robot_list)):
+                try:
+                    if self.get_current_mode(aid) == 'par':
+                        pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
+                        par_agents.append((aid, pos))
+                    else:
+                        pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
+                        rl_agents.append((aid, pos))
+                except Exception:
+                    continue
+            
+            # Debug: Log PAR-RL agent counts
+            if par_agents or rl_agents:
+                print(f"PAR-RL CHECK: Step {self.step_count}, PAR agents: {len(par_agents)}, RL agents: {len(rl_agents)}, safety_threshold: {safety_threshold:.3f}")
+            
+            # Check distances between PAR and RL agents
+            for par_id, par_pos in par_agents:
+                for rl_id, rl_pos in rl_agents:
+                    distance = ((par_pos[0] - rl_pos[0])**2 + (par_pos[1] - rl_pos[1])**2)**0.5
+                    if distance < safety_threshold:
+                        print(f"PAR-RL COLLISION DETECTED: Agent {par_id} (PAR) and Agent {rl_id} (RL) distance={distance:.3f} < {safety_threshold}")
+                        self._force_par_agent_exit(par_id)
+                        break
+        except Exception as e:
+            print(f"Error in PAR-RL distance detection: {e}")
+
         # Apply PAR positions BEFORE _step_pure_rl to ensure they are not overridden
         try:
             if hasattr(self, '_par_last_set_positions') and self._par_last_set_positions:
@@ -872,6 +908,19 @@ class ir_gym(env_base):
     
     def _step_pure_rl(self, action_list):
         """Execute step with pure RL logic (original behavior)."""
+        # Enforce boundary constraints before robot movement
+        action_list = self._enforce_boundaries(action_list)
+        
+        # DEBUG: Log actions before robot_step
+        print(f"ROBOT_STEP DEBUG: About to call robot_step with actions: {action_list}")
+        
+        # Execute robot movement with the modified actions
+        self.robot_step(action_list, vel_type='omni', stop=True)
+        self.obs_cirs_step()
+        
+        # DEBUG: Log actions before observation_reward
+        print(f"OBSERVATION_REWARD DEBUG: About to call observation_reward with actions: {action_list}")
+        
         # This is the original step logic
         ts = self.components['robots'].total_states()
         obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action), self.robot_list, action_list))
@@ -987,4 +1036,67 @@ class ir_gym(env_base):
                     'velocity': other.get('velocity', [0.0, 0.0])
                 }
         return result
+    
+    def _force_par_agent_exit(self, agent_id):
+        """
+        Force a PAR agent to exit PAR mode and switch back to RL mode.
+        
+        Args:
+            agent_id: ID of the agent to force exit
+        """
+        try:
+            if self.state_manager:
+                # Switch agent back to RL mode
+                self.state_manager.set_rl_rvo_mode(agent_id)
+                print(f"FORCED PAR EXIT: Agent {agent_id} switched from PAR to RL mode")
+                
+                # Clear any PAR execution state
+                if hasattr(self, 'par_executor') and self.par_executor:
+                    if hasattr(self.par_executor, 'agent_paths') and agent_id in self.par_executor.agent_paths:
+                        del self.par_executor.agent_paths[agent_id]
+                    if hasattr(self.par_executor, 'agent_substep_index') and agent_id in self.par_executor.agent_substep_index:
+                        del self.par_executor.agent_substep_index[agent_id]
+                
+                # Clear any queued PAR positions
+                if hasattr(self, '_par_last_set_positions') and self._par_last_set_positions:
+                    if agent_id in self._par_last_set_positions:
+                        del self._par_last_set_positions[agent_id]
+                        
+        except Exception as e:
+            print(f"Error forcing PAR agent {agent_id} exit: {e}")
+    
+    def _enforce_boundaries(self, action_list):
+        """限制动作，防止机器人移动到地图边界外"""
+        try:
+            # 获取地图边界
+            world_width = getattr(self, '_env_base__width', 15)  # 默认15米
+            world_height = getattr(self, '_env_base__height', 10)  # 默认10米
+            
+            # 检查每个机器人的动作
+            for i, robot in enumerate(self.robot_list):
+                if i < len(action_list) and hasattr(robot, 'state') and robot.state is not None:
+                    current_x = float(robot.state[0, 0])
+                    current_y = float(robot.state[1, 0])
+                    action = action_list[i]
+                    
+                    if action is not None and len(action) >= 2:
+                        # 预测下一步位置
+                        dt = getattr(self, 'step_time', 0.1)
+                        next_x = current_x + action[0] * dt
+                        next_y = current_y + action[1] * dt
+                        
+                        # 检查是否会超出边界
+                        if next_x < 0 or next_x > world_width or next_y < 0 or next_y > world_height:
+                            # 限制动作，使下一步位置在边界内
+                            max_vx = (world_width - current_x) / dt if next_x > world_width else (0 - current_x) / dt if next_x < 0 else action[0]
+                            max_vy = (world_height - current_y) / dt if next_y > world_height else (0 - current_y) / dt if next_y < 0 else action[1]
+                            
+                            # 更新动作
+                            action_list[i] = [max_vx, max_vy]
+                            
+                            print(f"BOUNDARY ENFORCE: Agent {i} action limited from [{action[0]:.3f}, {action[1]:.3f}] to [{max_vx:.3f}, {max_vy:.3f}] (bounds: [0,{world_width}] x [0,{world_height}])")
+        except Exception as e:
+            print(f"Error enforcing boundaries: {e}")
+        
+        return action_list
     

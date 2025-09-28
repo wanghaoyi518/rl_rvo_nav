@@ -80,6 +80,10 @@ class DeadlockConfig:
             # MAPF solver parameters
             'PAR_MAX_STEPS': 2000,  # Maximum steps for MAPF solver
             'PAR_HEURISTIC_WEIGHT': 0.6,  # Heuristic weight for A* search
+            
+            # Single agent deadlock trigger parameters
+            'SINGLE_AGENT_TIME_THRESHOLD': 50,  # Time threshold for single agent deadlock trigger
+            'MAX_NEIGHBORS_FOR_SINGLE_TRIGGER': 1,  # Maximum number of active neighbors for single agent trigger
         }
         
         # Load configuration from file if provided

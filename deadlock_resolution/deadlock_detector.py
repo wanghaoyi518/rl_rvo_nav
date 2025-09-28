@@ -279,6 +279,40 @@ class DeadlockDetector:
                         f"neighbors_with_history={neighbors_with_sufficient_history}, slow_neighbors={len(slow_neighbors)}, "
                         f"non_progress_neighbors={len(non_progress_neighbors)} -> trigger={cond_neighbors_slow and cond_non_progress}"
                     )
+                
+                # Single agent trigger as fallback: if agent is slow, not progressing, has few neighbors, and has been stuck for long time
+                if not (cond_neighbors_slow and cond_non_progress):
+                    single_agent_time_threshold = self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)  # Default 50 steps
+                    if self.step_counter >= single_agent_time_threshold:
+                        # Check if agent is not progressing toward goal
+                        if self._is_not_progressing_toward_goal(agent_state):
+                            # Count active neighbors (not arrived at goal)
+                            active_neighbors = []
+                            for neighbor_id in neighbors_comm:
+                                try:
+                                    if self.calculate_distance_to_goal(agent_states.get(neighbor_id, {})) > float(self.goal_tolerance):
+                                        active_neighbors.append(neighbor_id)
+                                except Exception:
+                                    pass
+                            
+                            # Check if agent has few active neighbors
+                            max_neighbors_for_single_trigger = self.config.get('MAX_NEIGHBORS_FOR_SINGLE_TRIGGER', 1)
+                            if len(active_neighbors) <= max_neighbors_for_single_trigger:
+                                if self.logger:
+                                    self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK TRIGGER: Agent {agent_id} avg_velocity={avg_velocity:.3f} < {self.small_speed}, "
+                                                           f"step={self.step_counter} >= {single_agent_time_threshold}, "
+                                                           f"active_neighbors={len(active_neighbors)} <= {max_neighbors_for_single_trigger}, "
+                                                           f"not_progressing=True")
+                                return True
+                            else:
+                                if self.logger:
+                                    self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Agent {agent_id} has too many active neighbors: {len(active_neighbors)} > {max_neighbors_for_single_trigger}")
+                        else:
+                            if self.logger:
+                                self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Agent {agent_id} is progressing toward goal")
+                    else:
+                        if self.logger:
+                            self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Agent {agent_id} step {self.step_counter} < {single_agent_time_threshold}")
         else:
             if self.logger:
                 self.logger.logger.debug(f"🔍 VELOCITY CHECK: Agent {agent_id} velocity={avg_velocity:.3f} >= {self.small_speed}")
@@ -345,6 +379,29 @@ class DeadlockDetector:
         except Exception:
             return False
     
+    def get_agent_position(self, agent_state: Dict) -> Optional[Tuple[float, float]]:
+        """
+        Extract agent position from agent state.
+        
+        Args:
+            agent_state: Agent state dictionary
+            
+        Returns:
+            Optional[Tuple[float, float]]: Agent position (x, y) or None if not available
+        """
+        if 'position' in agent_state:
+            position = agent_state['position']
+            if isinstance(position, (list, np.ndarray)) and len(position) >= 2:
+                return (float(position[0]), float(position[1]))
+        
+        # Try alternative position fields
+        for field in ['pos', 'location', 'pose']:
+            if field in agent_state:
+                pos_data = agent_state[field]
+                if isinstance(pos_data, (list, np.ndarray)) and len(pos_data) >= 2:
+                    return (float(pos_data[0]), float(pos_data[1]))
+        
+        return None
     
     def get_deadlock_participants(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> List[int]:
         """
@@ -415,6 +472,45 @@ class DeadlockDetector:
             if best_neighbor is not None:
                 participants.append(best_neighbor)
             participants = list(dict.fromkeys(participants))
+        
+        # Special handling for single agent fallback: if only one participant and it's a single agent trigger,
+        # force include the closest neighbor to enable PAR execution
+        if self.logger:
+            self.logger.logger.debug(f"🔍 PARTICIPANTS CHECK: Agent {agent_id}, participants={participants}, len={len(participants)}, step_counter={self.step_counter}, threshold={self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)}")
+        
+        if len(participants) == 1 and self.step_counter >= self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50):
+            # Find the closest neighbor within communication range
+            comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
+            candidates = self._get_neighbors_in_range(agent_id, agent_states, comm_range)
+            closest_neighbor = None
+            min_distance = float('inf')
+            
+            for neighbor_id in candidates:
+                if neighbor_id == agent_id:
+                    continue
+                # Skip arrived neighbors
+                try:
+                    if self.calculate_distance_to_goal(agent_states.get(neighbor_id, {})) <= float(self.goal_tolerance):
+                        continue
+                except Exception:
+                    pass
+                
+                # Calculate distance to this neighbor
+                try:
+                    agent_pos = self.get_agent_position(agent_states.get(agent_id, {}))
+                    neighbor_pos = self.get_agent_position(agent_states.get(neighbor_id, {}))
+                    if agent_pos and neighbor_pos:
+                        distance = math.sqrt((agent_pos[0] - neighbor_pos[0])**2 + (agent_pos[1] - neighbor_pos[1])**2)
+                        if distance < min_distance:
+                            min_distance = distance
+                            closest_neighbor = neighbor_id
+                except Exception:
+                    pass
+            
+            if closest_neighbor is not None:
+                participants.append(closest_neighbor)
+                if self.logger:
+                    self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Forced inclusion of neighbor {closest_neighbor} for PAR execution")
         
         # Lock selected participants for a few steps to avoid oscillation
         if self.participant_lock_steps > 0 and len(participants) > 1:
