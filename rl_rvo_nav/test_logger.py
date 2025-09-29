@@ -63,6 +63,10 @@ class TestLogger:
         start_positions = self.get_robot_start_positions_from_env()
         goal_positions = self.get_robot_goal_positions_from_env()
         
+        # Preserve existing waypoint_data if it exists
+        existing_waypoint_data = self.current_episode_data.get('waypoint_data', None) if hasattr(self, 'current_episode_data') else None
+        
+        # Create episode data with waypoint_data in the correct position (after goal_positions, before steps)
         self.current_episode_data = {
             "episode_id": episode_id,
             "robot_number": robot_number,
@@ -72,6 +76,16 @@ class TestLogger:
             "steps": [],
             "config": episode_config or {}
         }
+        
+        # Insert waypoint_data in the correct position if it existed
+        if existing_waypoint_data is not None:
+            # Create a new ordered dictionary with waypoint_data in the right place
+            ordered_data = {}
+            for key, value in self.current_episode_data.items():
+                ordered_data[key] = value
+                if key == "goal_positions":
+                    ordered_data["waypoint_data"] = existing_waypoint_data
+            self.current_episode_data = ordered_data
         
         # print(f"Started logging episode {episode_id} with {robot_number} robots")
     

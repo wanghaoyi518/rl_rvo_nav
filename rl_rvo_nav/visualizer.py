@@ -40,6 +40,14 @@ class TestVisualizer:
         self.goal_color = 'green'
         self.frame_duration = 200  # milliseconds (0.2 seconds)
         
+        # Agent colors for waypoint visualization (avoiding system colors: blue=RL, red=PAR, green=start/goal)
+        self.agent_colors = ['orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan', 'magenta', 'yellow', 'darkorange']
+        
+        # Waypoint visualization settings
+        self.waypoint_radius = 0.15
+        self.waypoint_line_width = 2.0
+        self.waypoint_alpha = 0.7
+        
         # Environment reference for map information
         self.env = None
         self.map_bounds = None
@@ -241,8 +249,9 @@ class TestVisualizer:
         #     elif obs['type'] == 'polygon':
         #         print(f"    Vertices: {len(obs['vertices'])} points")
         
-        # Set up the figure and axis
-        fig, ax = plt.subplots(figsize=(12, 10))
+        # Set up the figure and axis with extra space for legend
+        fig, ax = plt.subplots(figsize=(14, 10))
+        plt.subplots_adjust(right=0.75)  # Leave space for legend on the right
         
         # Set map bounds without extra margins (edges coincide with bounds)
         if self.map_bounds:
@@ -262,8 +271,15 @@ class TestVisualizer:
         start_positions = episode_data.get('start_positions', [])
         goal_positions = episode_data.get('goal_positions', [])
         
+        # Get waypoint data for long-range navigation
+        waypoint_data = episode_data.get('waypoint_data', {})
+        
         # Draw static map elements (obstacles, start positions, goal positions)
         self._draw_map_elements(ax, start_positions, goal_positions)
+        
+        # Draw waypoint paths if available (for long-range navigation)
+        if waypoint_data:
+            self._draw_waypoints(ax, waypoint_data)
         
         # Initialize agent circles
         agent_circles = []
@@ -292,7 +308,16 @@ class TestVisualizer:
             patches.Patch(color='green', label='Start Position'),
             patches.Patch(color='green', label='Goal Position')
         ]
-        ax.legend(handles=legend_elements, loc='upper right')
+        
+        # Add waypoint legend if waypoint data exists
+        if waypoint_data:
+            legend_elements.extend([
+                patches.Patch(color='gray', label='Waypoint Path'),
+                patches.Patch(color='gray', label='Waypoint (S=Start, E=End)')
+            ])
+        
+        # Place legend outside the plot area to avoid blocking map content
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
         
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
@@ -376,6 +401,89 @@ class TestVisualizer:
                 # Add goal label
                 ax.text(x, y + 0.3, f'G{i}', ha='center', va='center', 
                        fontsize=8, fontweight='bold', color='green')
+    
+    def _draw_waypoints(self, ax, waypoint_data):
+        """Draw waypoint paths for long-range navigation"""
+        if not waypoint_data:
+            return
+        
+        for agent_id_str, agent_data in waypoint_data.items():
+            try:
+                agent_id = int(agent_id_str)
+                color = self.agent_colors[agent_id % len(self.agent_colors)]
+                
+                waypoints = agent_data.get('waypoints', [])
+                if len(waypoints) < 2:
+                    continue
+                
+                # Draw waypoint lines
+                waypoint_x = [wp[0] for wp in waypoints]
+                waypoint_y = [wp[1] for wp in waypoints]
+                
+                # Draw connecting lines between waypoints
+                ax.plot(waypoint_x, waypoint_y, color=color, linewidth=self.waypoint_line_width,
+                       alpha=self.waypoint_alpha, linestyle='-', zorder=1)
+                
+                # Draw waypoint points
+                for i, (x, y) in enumerate(waypoints):
+                    if i == 0:  # Start waypoint
+                        # Larger circle for start
+                        circle = patches.Circle((x, y), self.waypoint_radius * 1.2, 
+                                              color=color, alpha=0.9, zorder=2)
+                        ax.add_patch(circle)
+                        # Add "S" label for start
+                        ax.text(x, y, 'S', ha='center', va='center', 
+                               fontsize=8, fontweight='bold', color='white', zorder=3)
+                    elif i == len(waypoints) - 1:  # End waypoint
+                        # Star for end
+                        star = patches.RegularPolygon((x, y), 5, radius=self.waypoint_radius * 1.2,
+                                                    orientation=0, color=color, alpha=0.9, zorder=2)
+                        ax.add_patch(star)
+                        # Add "E" label for end
+                        ax.text(x, y, 'E', ha='center', va='center', 
+                               fontsize=8, fontweight='bold', color='white', zorder=3)
+                    else:  # Intermediate waypoints
+                        # Regular circle for intermediate waypoints
+                        circle = patches.Circle((x, y), self.waypoint_radius, 
+                                              color=color, alpha=0.8, zorder=2)
+                        ax.add_patch(circle)
+                        # Add waypoint number
+                        ax.text(x, y, str(i), ha='center', va='center', 
+                               fontsize=6, fontweight='bold', color='white', zorder=3)
+                
+                # Add direction arrows on the path
+                self._draw_path_arrows(ax, waypoints, color)
+                
+            except (ValueError, KeyError, IndexError) as e:
+                print(f"Warning: Could not draw waypoints for agent {agent_id_str}: {e}")
+                continue
+    
+    def _draw_path_arrows(self, ax, waypoints, color):
+        """Draw arrows on the path to show direction"""
+        if len(waypoints) < 2:
+            return
+        
+        # Add arrows at regular intervals along the path
+        arrow_interval = max(1, len(waypoints) // 4)  # Add 3-4 arrows along the path
+        
+        for i in range(arrow_interval, len(waypoints), arrow_interval):
+            if i < len(waypoints):
+                # Calculate direction vector
+                if i > 0:
+                    dx = waypoints[i][0] - waypoints[i-1][0]
+                    dy = waypoints[i][1] - waypoints[i-1][1]
+                    
+                    # Normalize direction vector
+                    length = np.sqrt(dx*dx + dy*dy)
+                    if length > 0:
+                        dx /= length
+                        dy /= length
+                        
+                        # Draw arrow
+                        ax.annotate('', xy=(waypoints[i][0], waypoints[i][1]),
+                                  xytext=(waypoints[i][0] - dx*0.3, waypoints[i][1] - dy*0.3),
+                                  arrowprops=dict(arrowstyle='->', color=color, 
+                                                lw=1.5, alpha=0.8), zorder=2)
     
     def create_session_visualizations(self, logs_dir):
         """

@@ -28,6 +28,13 @@ class mrnav(gym.Env):
         if not isinstance(action, list):
             action = [action]
 
+        # Enforce environment boundaries using ir_gym's existing logic
+        if hasattr(self.ir_gym, '_enforce_boundaries'):
+            try:
+                action = self.ir_gym._enforce_boundaries(action)
+            except Exception:
+                pass
+
         rvo_reward_list = self.ir_gym.rvo_reward_list_cal(action)
         self.ir_gym.robot_step(action, vel_type=vel_type, stop=stop)
         self.ir_gym.obs_cirs_step()
@@ -46,6 +53,10 @@ class mrnav(gym.Env):
     def reset(self, mode=0, **kwargs):
         # mode = kwargs.get('mode', 0)
         return self.ir_gym.env_reset(mode, circular = self.circular, square=self.square, interval=self.interval, **kwargs)
+    
+    def set_test_logger(self, test_logger):
+        """Set test logger reference for waypoint logging."""
+        self.ir_gym._test_logger = test_logger
 
     def reset_one(self, id):
         self.ir_gym.components['robots'].robot_reset(id)

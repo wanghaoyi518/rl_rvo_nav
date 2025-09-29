@@ -42,6 +42,10 @@ class post_train_with_deadlock:
         # Initialize test logger
         self.test_logger = TestLogger(test_type="test_with_deadlock")
         self.test_logger.set_environment(env)
+        
+        # Set test logger reference in environment for waypoint logging
+        if hasattr(env, 'set_test_logger'):
+            env.set_test_logger(self.test_logger)
 
     def policy_test(self, policy_type='drl', policy_path=None, policy_name='policy', result_path=None, result_name='/result.txt', figure_save_path=None, ani_save_path=None, policy_dict=False, once=False):
         
