@@ -33,11 +33,11 @@ parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')  # 
 parser.add_argument('--arg_name', default='pre_train')
 # Stage 4 配置文件
 # parser.add_argument('--world_name', default='mode7_stage4_complex+.yaml')  # Stage 4配置文件
-parser.add_argument('--world_name', default='mode8_static_corridor.yaml')  # Stage 4配置文件
+parser.add_argument('--world_name', default='mode8_long_range.yaml')  # Stage 4配置文件
 
 parser.add_argument('--render', action='store_true')
 # Stage 4 使用10个机器人
-parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--robot_number', type=int, default='1')
 parser.add_argument('--num_episodes', type=int, default='1')
 # Mode 7: random with distance constraint + random polygons
 parser.add_argument('--dis_mode', type=int, default='8')  # 7 for Mode 7

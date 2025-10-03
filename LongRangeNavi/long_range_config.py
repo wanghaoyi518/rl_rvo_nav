@@ -13,7 +13,7 @@ class LongRangeConfig:
     obstacle_inflation_radius: float = 0.5
 
     # Waypoint manager parameters
-    reach_threshold: float = 1.0
+    reach_threshold: float = 0.2
     goal_switch_smoothing: bool = True
 
     # Scenario parameters (meters)

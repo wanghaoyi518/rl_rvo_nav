@@ -1058,11 +1058,22 @@ class PARCoordinator:
                 xy_reso = float(getattr(self.gym_env, 'xy_reso'))
         except Exception:
             pass
+        # Method A: force PAR resolution to match environment long-range resolution if available
+        desired_res = None
+        try:
+            if hasattr(self.gym_env, 'enable_long_range_nav') and getattr(self.gym_env, 'enable_long_range_nav'):
+                cfg = getattr(self.gym_env, 'long_range_config', None)
+                if cfg is not None:
+                    desired_res = float(cfg.get('grid_resolution', None)) if isinstance(cfg, dict) else float(getattr(cfg, 'grid_resolution', None))
+        except Exception:
+            desired_res = None
+        if desired_res is not None and desired_res > 0:
+            xy_reso = desired_res
         
         workspace = {
             'bounds': bounds,
             'obstacles': self._get_environment_obstacles(),
-            'grid_resolution': self.config.get('GRID_RESOLUTION', 1.0),
+            'grid_resolution': (desired_res if (desired_res is not None and desired_res > 0) else self.config.get('GRID_RESOLUTION', 1.0)),
             'map_matrix': map_matrix,
             'xy_reso': xy_reso,
             'offset_x': getattr(self.gym_env, 'offset_x', 0.0),

@@ -34,7 +34,7 @@ class PAREnvironment:
         self.participants = participants
         self.config = config
         self.par_offset = config.get('PAR_OFFSET', 2)
-        self.grid_resolution = config.get('GRID_RESOLUTION', 1.0)
+        self.grid_resolution = config.get('GRID_RESOLUTION', 0.5)
         
         # Environment boundaries
         self.min_x = float('inf')

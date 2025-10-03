@@ -33,14 +33,25 @@ class GlobalPathPlanner:
         start_i, start_j = self._world_to_grid(start_xy)
         goal_i, goal_j = self._world_to_grid(goal_xy)
 
+        # Check if start and goal are within grid bounds
+        if not self._is_grid_position_valid(start_i, start_j):
+            print(f"DEBUG A*: Start position {start_xy} -> grid({start_i}, {start_j}) is out of bounds")
+            return [goal_xy]
+        if not self._is_grid_position_valid(goal_i, goal_j):
+            print(f"DEBUG A*: Goal position {goal_xy} -> grid({goal_i}, {goal_j}) is out of bounds")
+            return [goal_xy]
+
         # Define goal predicate in grid coordinates
         def is_goal(start, cur, sub_map, actor_set):
             return (cur.i == goal_i) and (cur.j == goal_j)
 
-        # Run A*
-        result = self._search.startSearch(self._sub_map, None, start_i, start_j, 0, 0, is_goal, True, True, 0, -1, -1, set())
+        # Run A* with correct goal indices so heuristic targets the actual goal
+        result = self._search.startSearch(self._sub_map, None, start_i, start_j, goal_i, goal_j, is_goal, True, True, 0, -1, -1, set())
 
         if not getattr(result, 'pathfound', False):
+            print(f"DEBUG A*: No path found from {start_xy} to {goal_xy}")
+            print(f"  Grid start: ({start_i}, {start_j}), Grid goal: ({goal_i}, {goal_j})")
+            print(f"  Grid size: {len(self._grid)}x{len(self._grid[0]) if self._grid else 0}")
             return [goal_xy]
 
         dense_grid_path: List[Tuple[int, int]] = [(p.i, p.j) for p in getattr(result, 'lppath', [])]
@@ -60,13 +71,128 @@ class GlobalPathPlanner:
         if len(sparse) == 0 or sparse[-1] != dense_world_path[-1]:
             sparse.append(dense_world_path[-1])
 
+
+        print(f"DEBUG WAYPOINT SIMPLIFICATION: dense_path={len(dense_world_path)}, sparse_path={len(sparse)}, spacing={self._waypoint_spacing}")
+        print(f"DEBUG DENSE PATH: {dense_world_path[:5]}...{dense_world_path[-3:] if len(dense_world_path) > 5 else dense_world_path}")
+        print(f"DEBUG SPARSE PATH: {sparse}")
         return sparse
+
+    def separate_waypoints(self, waypoint_lists: List[List[Tuple[float, float]]], min_distance: float = 1.0) -> List[List[Tuple[float, float]]]:
+        """
+        Separate waypoints from multiple agents to avoid conflicts.
+        Ensures minimum Manhattan distance between any two waypoints from different agents.
+        Also ensures waypoints do not fall on obstacles.
+        
+        Args:
+            waypoint_lists: List of waypoint lists for each agent
+            min_distance: Minimum Manhattan distance between waypoints
+            
+        Returns:
+            List of separated waypoint lists
+        """
+        if len(waypoint_lists) <= 1:
+            return waypoint_lists
+            
+        separated_lists = []
+        used_positions = set()
+        
+        for agent_id, waypoints in enumerate(waypoint_lists):
+            separated_waypoints = []
+            
+            for waypoint in waypoints:
+                # Try to find a non-conflicting position that avoids obstacles
+                new_waypoint = self._find_separated_position(waypoint, used_positions, min_distance)
+                separated_waypoints.append(new_waypoint)
+                used_positions.add(new_waypoint)
+            
+            separated_lists.append(separated_waypoints)
+            
+        return separated_lists
+    
+    def _find_separated_position(self, original_pos: Tuple[float, float], used_positions: set, min_distance: float) -> Tuple[float, float]:
+        """
+        Find a position that maintains minimum distance from used positions and avoids obstacles.
+        Uses Manhattan distance for simplicity.
+        """
+        # Check if original position is valid (not on obstacle and separated from used positions)
+        if self._is_position_valid(original_pos, used_positions, min_distance):
+            return original_pos
+            
+        # Try to find a nearby valid position
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            # Generate candidate positions in expanding rings
+            radius = min_distance + attempt * 0.5
+            candidates = self._generate_candidate_positions(original_pos, radius)
+            
+            for candidate in candidates:
+                if self._is_position_valid(candidate, used_positions, min_distance):
+                    return candidate
+                    
+        # If no valid position found, return original (fallback)
+        print(f"WARNING: Could not find valid separated position for {original_pos}, using original")
+        return original_pos
+    
+    def _is_position_valid(self, pos: Tuple[float, float], used_positions: set, min_distance: float) -> bool:
+        """Check if position is valid: not on obstacle and maintains minimum distance from used positions."""
+        # First check if position is on an obstacle
+        if self._is_position_on_obstacle(pos):
+            return False
+            
+        # Then check if position maintains minimum distance from used positions
+        return self._is_position_separated(pos, used_positions, min_distance)
+    
+    def _is_position_on_obstacle(self, pos: Tuple[float, float]) -> bool:
+        """Check if the given position falls on an obstacle in the grid."""
+        try:
+            # Convert continuous coordinates to grid coordinates
+            grid_i, grid_j = self._world_to_grid(pos)
+            
+            # Use the new boundary check method
+            return not self._is_grid_position_valid(grid_i, grid_j)
+            
+        except Exception as e:
+            print(f"ERROR checking obstacle at {pos}: {e}")
+            return True  # If error, consider it obstacle for safety
+    
+    def _is_position_separated(self, pos: Tuple[float, float], used_positions: set, min_distance: float) -> bool:
+        """Check if position maintains minimum distance from all used positions."""
+        for used_pos in used_positions:
+            manhattan_dist = abs(pos[0] - used_pos[0]) + abs(pos[1] - used_pos[1])
+            if manhattan_dist < min_distance:
+                return False
+        return True
+    
+    def _generate_candidate_positions(self, center: Tuple[float, float], radius: float) -> List[Tuple[float, float]]:
+        """Generate candidate positions around a center point."""
+        candidates = []
+        center_x, center_y = center
+        
+        # Generate positions in a square pattern around the center
+        for dx in [-radius, 0, radius]:
+            for dy in [-radius, 0, radius]:
+                if dx == 0 and dy == 0:
+                    continue
+                candidate = (center_x + dx, center_y + dy)
+                candidates.append(candidate)
+                
+        return candidates
 
     def _world_to_grid(self, xy: Tuple[float, float]) -> Tuple[int, int]:
         x, y = float(xy[0]), float(xy[1])
         j = int(round(x / self._resolution))
         i = int(round(y / self._resolution))
         return i, j
+
+    def _is_grid_position_valid(self, grid_i: int, grid_j: int) -> bool:
+        """Check if grid position is within bounds and not on obstacle."""
+        # Check bounds (grid indices should be in range [0, len-1])
+        if (grid_i < 0 or grid_i >= len(self._grid) or 
+            grid_j < 0 or grid_j >= len(self._grid[0])):
+            return False
+        
+        # Check if position is on obstacle
+        return self._grid[grid_i][grid_j] == 0
 
     def _grid_to_world(self, ij: Tuple[int, int]) -> Tuple[float, float]:
         i, j = int(ij[0]), int(ij[1])

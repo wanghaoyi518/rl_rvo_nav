@@ -28,8 +28,9 @@ parser.add_argument('--once', action='store_true')
 # Long-range specific
 parser.add_argument('--long_range', action='store_true', default=True)
 parser.add_argument('--grid_resolution', type=float, default=0.5)
-parser.add_argument('--waypoint_spacing', type=float, default=5.0)
-parser.add_argument('--reach_threshold', type=float, default=1.0)
+parser.add_argument('--waypoint_spacing', type=float, default=2.0)
+parser.add_argument('--reach_threshold', type=float, default=0.2)
+parser.add_argument('--waypoint_separation_manhattan', type=float, default=2.0)
 
 policy_args = parser.parse_args()
 
@@ -63,6 +64,7 @@ env = gym.make(
         'grid_resolution': policy_args.grid_resolution,
         'waypoint_min_spacing': policy_args.waypoint_spacing,
         'reach_threshold': policy_args.reach_threshold,
+        'waypoint_separation_manhattan': policy_args.waypoint_separation_manhattan,
     }
 )
 
@@ -73,9 +75,10 @@ pt = post_train(
     num_episodes=policy_args.num_episodes,
     reset_mode=policy_args.dis_mode,
     render=policy_args.render,
-    std_factor=0.00001,
+    # std_factor=0.00001,
+    std_factor=0.001,
     acceler_vel=1.0,
-    max_ep_len=1000,
+    max_ep_len=300,
     neighbors_region=args.neighbors_region,
     neighbor_num=args.neighbors_num,
     args=args,

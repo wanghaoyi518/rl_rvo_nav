@@ -141,7 +141,17 @@ class post_train_with_deadlock:
             ep_len += 1
             figure_id += 1
 
-            if np.max(d) or (ep_len == self.max_ep_len) or np.min(info):
+            # 统一成功判定：优先从info字典读取done标志，否则回退到np.min(info)
+            if isinstance(info, list) and len(info) > 0 and isinstance(info[0], dict):
+                done_flags = [bool(item.get('done', False)) for item in info]
+                episode_success = all(done_flags)
+            else:
+                try:
+                    episode_success = bool(np.min(info))
+                except Exception:
+                    episode_success = False
+
+            if np.max(d) or (ep_len == self.max_ep_len) or episode_success:
                 speed = np.mean(speed_list)
                 figure_id = 0
                 
@@ -151,8 +161,7 @@ class post_train_with_deadlock:
                     # Save episode data
                     self.env.ir_gym.deadlock_logger.save_episode_data()
                 
-                # Determine episode success and failure reason
-                episode_success = bool(np.min(info))
+                # Determine episode success and failure reason（复用上面计算的episode_success）
                 failure_reason = None
                 
                 if episode_success:
@@ -182,7 +191,7 @@ class post_train_with_deadlock:
                 n += 1
                 episode_started = False  # Reset for next episode
 
-                if np.min(info):
+                if episode_success:
                     sn+=1
                     
                     # if n == 2: 

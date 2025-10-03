@@ -143,12 +143,99 @@ class ir_gym(env_base):
             # Use original pure RL logic
             ts = self.components['robots'].total_states() # robot_state_list, nei_state_list, obs_circular_list, obs_line_list
 
+            # Waypoint progression BEFORE observation/reward to align des_vel with current waypoint
+            reached_flags = [False] * len(self.robot_list)
+            final_flags = [False] * len(self.robot_list)
+            if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
+                try:
+                    for aid, robot in enumerate(self.robot_list):
+                        mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                        if mode == 'par':
+                            continue
+                        if aid in self._waypoint_managers:
+                            pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
+                            reached, final_reached = self._waypoint_managers[aid].update(pos)
+                            reached_flags[aid] = bool(reached)
+                            final_flags[aid] = bool(final_reached)
+                            cur_goal = self._waypoint_managers[aid].get_current_goal()
+                            if cur_goal is not None:
+                                try:
+                                    import numpy as np
+                                    robot.goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
+                                except Exception:
+                                    pass
+                            # Debug print (angle) for agent 0
+                            if aid == 0 and hasattr(self, 'step_count') and cur_goal is not None:
+                                if not hasattr(self, '_debug_step_count'):
+                                    self._debug_step_count = 0
+                                if self._debug_step_count % 100 == 0:
+                                    print(f"DEBUG Agent 0: pos={pos}, goal={cur_goal}, reached={reached}, final={final_reached}")
+                                    try:
+                                        des_vec = np.squeeze(robot.cal_des_vel_omni())
+                                        goal_vec = (float(cur_goal[0]) - float(pos[0]), float(cur_goal[1]) - float(pos[1]))
+                                        dvx = float(des_vec[0]) if np.size(des_vec) > 0 else 0.0
+                                        dvy = float(des_vec[1]) if np.size(des_vec) > 1 else 0.0
+                                        gvx = float(goal_vec[0])
+                                        gvy = float(goal_vec[1])
+                                        des_norm = max(1e-8, (dvx**2 + dvy**2) ** 0.5)
+                                        goal_norm = max(1e-8, (gvx**2 + gvy**2) ** 0.5)
+                                        dot_val = (dvx * gvx + dvy * gvy) / (des_norm * goal_norm)
+                                        dot_val = max(-1.0, min(1.0, dot_val))
+                                        angle_deg = float(np.degrees(np.arccos(dot_val)))
+                                        print(f"DEBUG Direction: des_vel=({dvx:.3f},{dvy:.3f}), goal_vec=({gvx:.3f},{gvy:.3f}), angle_deg={angle_deg:.1f}")
+                                    except Exception:
+                                        pass
+                                self._debug_step_count += 1
+                except Exception as e:
+                    print(f"LONG-RANGE STEP ERROR: {e}")
+
+            # Now compute observation and reward using updated robot.goal
             obs_reward_list = list(map(lambda robot, action: self.observation_reward(robot, ts[1], ts[2], ts[3], action, **kwargs), self.robot_list, action_list))
 
             obs_list = [l[0] for l in obs_reward_list]
             reward_list = [l[1] for l in obs_reward_list]
             done_list = [l[2] for l in obs_reward_list]
             info_list = [l[3] for l in obs_reward_list]
+
+            # Mark done for agents that reached final waypoint this step
+            if self.enable_long_range_nav and len(final_flags) == len(done_list):
+                for i in range(len(done_list)):
+                    if final_flags[i]:
+                        done_list[i] = True
+
+            # Log current waypoint goals into info_list and include done flag without updating managers again
+            if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
+                try:
+                    current_goals = []
+                    for aid, robot in enumerate(self.robot_list):
+                        mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                        if mode == 'par':
+                            if hasattr(robot, 'goal') and robot.goal is not None:
+                                current_goals.append([float(robot.goal[0]), float(robot.goal[1])])
+                            else:
+                                current_goals.append([0.0, 0.0])
+                            continue
+                        if aid in self._waypoint_managers:
+                            cur_goal = self._waypoint_managers[aid].get_current_goal()
+                            if cur_goal is not None:
+                                current_goals.append([float(cur_goal[0]), float(cur_goal[1])])
+                            else:
+                                current_goals.append([0.0, 0.0])
+                        else:
+                            current_goals.append([0.0, 0.0])
+                    if len(current_goals) > 0:
+                        for i, info in enumerate(info_list):
+                            if i < len(current_goals):
+                                if not isinstance(info, dict):
+                                    info_list[i] = {
+                                        'current_goal': current_goals[i],
+                                        'done': bool(final_flags[i]) if i < len(final_flags) else False
+                                    }
+                                else:
+                                    info['current_goal'] = current_goals[i]
+                                    info['done'] = bool(final_flags[i]) if i < len(final_flags) else False
+                except Exception as e:
+                    print(f"LONG-RANGE STEP ERROR: {e}")
 
             return obs_list, reward_list, done_list, info_list
 
@@ -242,7 +329,7 @@ class ir_gym(env_base):
     def observation(self, robot, nei_state_list, obs_circular_list, obs_line_list):
 
         robot_omni_state = robot.omni_state()
-        des_vel = np.squeeze(robot_omni_state[-2:])
+        des_vel = np.squeeze(robot.cal_des_vel_omni())
         
         combined_lines = self._get_combined_obs_lines()
         obs_vo_list, _, min_exp_time, _ = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, combined_lines)
@@ -286,12 +373,22 @@ class ir_gym(env_base):
         if self.enable_long_range_nav and GlobalPathPlanner is not None and WaypointManager is not None:
             try:
                 # Build occupancy grid from workspace if available via PAR environment helper
-                grid, resolution = self._build_occupancy_grid_for_long_range()
+                grid, resolution, world_w, world_h = self._build_occupancy_grid_for_long_range()
                 if grid is not None:
-                    self._global_planner = GlobalPathPlanner(grid, resolution, getattr(self.long_range_config, 'waypoint_min_spacing', 5.0))
+                    # Get waypoint spacing from config (handle both dict and object)
+                    if isinstance(self.long_range_config, dict):
+                        waypoint_spacing = self.long_range_config.get('waypoint_min_spacing', 5.0)
+                    else:
+                        waypoint_spacing = getattr(self.long_range_config, 'waypoint_min_spacing', 5.0)
+                    self._global_planner = GlobalPathPlanner(grid, resolution, waypoint_spacing)
                     # Initialize per-agent waypoint managers
                     self._waypoint_managers = {}
                     waypoint_data = {}  # Store waypoint data for logging
+                    
+                    # First, generate waypoints for all agents
+                    all_waypoint_lists = []
+                    agent_info = []
+                    
                     for aid, robot in enumerate(self.robot_list):
                         start_pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
                         goal = None
@@ -313,7 +410,52 @@ class ir_gym(env_base):
                                 goal = tuple(robot.destination)
                         if goal is None:
                             goal = (start_pos[0] + 2.0, start_pos[1])
+                        
                         waypoints = self._global_planner.plan_path(start_pos, goal)
+                        all_waypoint_lists.append(waypoints)
+                        agent_info.append((aid, robot, start_pos, goal))
+                    
+                    # Separate waypoints to avoid conflicts (disabled for debugging)
+                    # if isinstance(self.long_range_config, dict):
+                    #     min_waypoint_distance = float(self.long_range_config.get('waypoint_separation_manhattan', 1.0))
+                    # else:
+                    #     min_waypoint_distance = float(getattr(self.long_range_config, 'waypoint_separation_manhattan', 1.0))
+                    # print(f"LONG-RANGE: Separating waypoints with min distance {min_waypoint_distance}")
+                    # separated_waypoint_lists = self._global_planner.separate_waypoints(all_waypoint_lists, min_waypoint_distance)
+                    separated_waypoint_lists = all_waypoint_lists
+                    
+                    # Debug separation results (disabled)
+                    # for i, (original, separated) in enumerate(zip(all_waypoint_lists, separated_waypoint_lists)):
+                    #     if original != separated:
+                    #         print(f"LONG-RANGE: Agent {i} waypoints separated: {len(original)} -> {len(separated)}")
+                    #         print(f"  Original: {original[:3]}...{original[-2:] if len(original) > 3 else ''}")
+                    #         print(f"  Separated: {separated[:3]}...{separated[-2:] if len(separated) > 3 else ''}")
+                    
+                    # Now create waypoint managers with separated waypoints
+                    for i, (aid, robot, start_pos, goal) in enumerate(agent_info):
+                        waypoints = separated_waypoint_lists[i]
+                        # # Remove the first waypoint if it approximately coincides with the start position
+                        # try:
+                        #     reach_thr = getattr(self.long_range_config, 'reach_threshold', 0.2)
+                        #     if isinstance(waypoints, list) and len(waypoints) > 0:
+                        #         wx, wy = float(waypoints[0][0]), float(waypoints[0][1])
+                        #         sx, sy = float(start_pos[0]), float(start_pos[1])
+                        #         if (wx - sx) * (wx - sx) + (wy - sy) * (wy - sy) <= (reach_thr * reach_thr):
+                        #             waypoints = waypoints[1:]
+                        # except Exception:
+                        #     pass
+                        reach_thr = getattr(self.long_range_config, 'reach_threshold', 0.2)
+                        # Conditionally remove the first waypoint only if it overlaps start and there are >=2 waypoints
+                        try:
+                            if isinstance(waypoints, list) and len(waypoints) >= 2:
+                                wx, wy = float(waypoints[0][0]), float(waypoints[0][1])
+                                sx, sy = float(start_pos[0]), float(start_pos[1])
+                                if (wx - sx) * (wx - sx) + (wy - sy) * (wy - sy) <= (reach_thr * reach_thr):
+                                    waypoints = waypoints[1:]
+                        except Exception:
+                            pass
+                        print(f"LONG-RANGE: Agent {aid} waypoints: {waypoints}")
+                        
                         # Convert numpy arrays to lists for JSON serialization
                         def convert_to_serializable(obj):
                             if hasattr(obj, 'tolist'):
@@ -328,7 +470,6 @@ class ir_gym(env_base):
                             'final_goal': convert_to_serializable(goal),
                             'waypoints': convert_to_serializable(waypoints)
                         }
-                        reach_thr = getattr(self.long_range_config, 'reach_threshold', 1.0)
                         self._waypoint_managers[aid] = WaypointManager(aid, waypoints, reach_threshold=reach_thr)
                         cur_goal = self._waypoint_managers[aid].get_current_goal()
                         if cur_goal is not None:
@@ -338,6 +479,9 @@ class ir_gym(env_base):
                                 pass
                     # Log waypoint data to episode logger if available
                     self._log_waypoint_data(waypoint_data)
+                    
+                    # Log discretized grid map for debugging
+                    self._log_discretized_grid(grid, resolution, world_w, world_h)
             except Exception as e:
                 print(f"LONG-RANGE INIT ERROR: {e}")
                 self._global_planner = None
@@ -850,6 +994,29 @@ class ir_gym(env_base):
         except Exception:
             pass
 
+        # Before executing RL dynamics, align waypoint goal so observation uses current waypoint
+        if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
+            try:
+                for aid, robot in enumerate(self.robot_list):
+                    mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                    if mode == 'par':
+                        continue
+                    if aid in self._waypoint_managers:
+                        pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
+                        # Progress waypoint once before observation/reward
+                        reached, final_reached = self._waypoint_managers[aid].update(pos)
+                        cur_goal = self._waypoint_managers[aid].get_current_goal()
+                        if cur_goal is not None:
+                            try:
+                                import numpy as np
+                                robot.goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
+                            except Exception:
+                                pass
+                # Mark that we've progressed waypoint in this step to skip inside _step_pure_rl
+                self._wp_progressed_in_step = True
+            except Exception:
+                pass
+
         # Execute the modified actions using pure RL logic
         # Pre-yield: prevent RL agents from moving into PAR agents (predictive one-step check)
         try:
@@ -994,6 +1161,47 @@ class ir_gym(env_base):
             except Exception:
                 pass
 
+        # Ensure info_list carries 'done' based on waypoint final flags (align success criteria)
+        try:
+            if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
+                # Build current final flags without updating managers again
+                final_flags = []
+                current_goals = []
+                for aid, robot in enumerate(self.robot_list):
+                    mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                    if mode == 'par':
+                        # In PAR mode, keep current goal and mark not done here (PAR handles completion)
+                        if hasattr(robot, 'goal') and robot.goal is not None:
+                            current_goals.append([float(robot.goal[0]), float(robot.goal[1])])
+                        else:
+                            current_goals.append([0.0, 0.0])
+                        final_flags.append(False)
+                        continue
+                    if aid in self._waypoint_managers:
+                        cur_goal = self._waypoint_managers[aid].get_current_goal()
+                        is_final = (cur_goal is None)
+                        final_flags.append(bool(is_final))
+                        if cur_goal is not None:
+                            current_goals.append([float(cur_goal[0]), float(cur_goal[1])])
+                        else:
+                            current_goals.append([0.0, 0.0])
+                    else:
+                        final_flags.append(False)
+                        current_goals.append([0.0, 0.0])
+
+                # Attach to info_list
+                for i, info in enumerate(info_list):
+                    if not isinstance(info, dict):
+                        info_list[i] = {
+                            'current_goal': current_goals[i] if i < len(current_goals) else [0.0, 0.0],
+                            'done': bool(final_flags[i]) if i < len(final_flags) else False
+                        }
+                    else:
+                        info['current_goal'] = current_goals[i] if i < len(current_goals) else [0.0, 0.0]
+                        info['done'] = bool(final_flags[i]) if i < len(final_flags) else False
+        except Exception:
+            pass
+
         return obs_list, reward_list, done_list, info_list
     
     def _step_pure_rl(self, action_list):
@@ -1020,27 +1228,12 @@ class ir_gym(env_base):
         done_list = [l[2] for l in obs_reward_list]
         info_list = [l[3] for l in obs_reward_list]
         
-        # Long-range waypoint progression (only when not in PAR for each agent)
-        if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
+        # Long-range waypoint progression moved earlier in deadlock path; avoid double-update
+        if hasattr(self, '_wp_progressed_in_step') and self._wp_progressed_in_step:
             try:
-                for aid, robot in enumerate(self.robot_list):
-                    mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                    if mode == 'par':
-                        continue
-                    if aid in self._waypoint_managers:
-                        pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
-                        reached, final_reached = self._waypoint_managers[aid].update(pos)
-                        cur_goal = self._waypoint_managers[aid].get_current_goal()
-                        if cur_goal is not None:
-                            try:
-                                robot.goal = [cur_goal[0], cur_goal[1]]
-                            except Exception:
-                                pass
-                        if final_reached:
-                            if aid < len(done_list):
-                                done_list[aid] = True
-            except Exception as e:
-                print(f"LONG-RANGE STEP ERROR: {e}")
+                del self._wp_progressed_in_step
+            except Exception:
+                pass
         
         return obs_list, reward_list, done_list, info_list
     
@@ -1116,39 +1309,49 @@ class ir_gym(env_base):
         try:
             # Prefer map_matrix if available (same source used by PAR environment)
             map_matrix = None
-            resolution = None
+            # Default resolution from long-range config
+            resolution = float(getattr(self.long_range_config, 'grid_resolution', 0.5))
             if hasattr(self, 'components') and isinstance(self.components, dict):
                 map_matrix = self.components.get('map_matrix', None)
-            if hasattr(self, 'xy_reso'):
-                resolution = float(getattr(self, 'xy_reso'))
             
             # If we have a pre-rasterized map_matrix, use it directly
             if map_matrix is not None:
+                # If a rasterized map exists, align planner resolution with map's xy_reso
+                try:
+                    if 'xy_reso' in self.components and self.components['xy_reso'] is not None:
+                        resolution = float(self.components['xy_reso'])
+                except Exception:
+                    pass
                 # Ensure binarized grid (0 free, 1 obstacle)
                 import numpy as _np
                 arr = _np.array(map_matrix)
                 bin_grid = (arr != 0).astype(int).tolist()
-                if resolution is None:
-                    resolution = float(getattr(self.long_range_config, 'grid_resolution', 0.5))
-                return bin_grid, resolution
+                # Get world dimensions for logging
+                world_w = int(getattr(self, '_env_base__width', 10))
+                world_h = int(getattr(self, '_env_base__height', 10))
+                return bin_grid, resolution, world_w, world_h
             
             # Fallback: build grid with obstacles like PAR does
             world_w = int(getattr(self, '_env_base__width', 10))
             world_h = int(getattr(self, '_env_base__height', 10))
-            resolution = resolution if resolution is not None else float(getattr(self.long_range_config, 'grid_resolution', 0.5))
             cols = max(1, int(round(world_w / resolution)))
             rows = max(1, int(round(world_h / resolution)))
             grid = [[0 for _ in range(cols)] for __ in range(rows)]
             
             # Add obstacles using the same method as PAR
             obstacles = self._get_environment_obstacles_for_long_range()
+            print(f"LONG-RANGE: Found {len(obstacles)} obstacles")
             if obstacles:
                 self._populate_obstacles_in_grid(grid, obstacles, resolution, world_w, world_h)
+                print(f"LONG-RANGE: Populated {len(obstacles)} obstacles into grid")
+            else:
+                print(f"LONG-RANGE: No obstacles found to populate")
             
             # Add map boundaries as obstacles to prevent path planning outside the map
+            # Now using dynamic boundary checking instead of pre-marking
             self._add_map_boundaries_as_obstacles(grid, world_w, world_h, resolution)
             
-            return grid, resolution
+            return grid, resolution, world_w, world_h
         except Exception as e:
             print(f"LONG-RANGE GRID ERROR: {e}")
             return None, None
@@ -1187,7 +1390,8 @@ class ir_gym(env_base):
     def _populate_obstacles_in_grid(self, grid, obstacles, resolution, world_width, world_height):
         """Populate the grid with obstacles using the same method as PAR."""
         try:
-            for obstacle in obstacles:
+            for i, obstacle in enumerate(obstacles):
+                print(f"LONG-RANGE: Processing obstacle {i}: {type(obstacle)}")
                 self._add_obstacle_to_grid(grid, obstacle, resolution, world_width, world_height)
         except Exception as e:
             print(f"LONG-RANGE OBSTACLE POPULATION ERROR: {e}")
@@ -1199,11 +1403,13 @@ class ir_gym(env_base):
                 # Circular obstacle
                 center_x, center_y = obstacle.pos[0], obstacle.pos[1]
                 radius = obstacle.radius
+                print(f"LONG-RANGE: Adding circular obstacle at ({center_x}, {center_y}) with radius {radius}")
                 self._add_circular_obstacle_to_grid(grid, center_x, center_y, radius, resolution, world_width, world_height)
                 
             elif hasattr(obstacle, 'vertices'):
                 # Polygon obstacle
                 vertices = obstacle.vertices
+                print(f"LONG-RANGE: Adding polygon obstacle with {len(vertices)} vertices: {vertices}")
                 self._add_polygon_obstacle_to_grid(grid, vertices, resolution, world_width, world_height)
             elif hasattr(obstacle, 'vertexes'):
                 # Polygon obstacle (ir_sim obs_polygon uses 'vertexes' 2xN)
@@ -1215,8 +1421,10 @@ class ir_gym(env_base):
                     else:
                         # Fallback: attempt to iterate columns
                         vertices = [(float(v[0]), float(v[1])) for v in getattr(obstacle, 'vertexes')]
+                    print(f"LONG-RANGE: Adding polygon obstacle (vertexes) with {len(vertices)} vertices: {vertices}")
                     self._add_polygon_obstacle_to_grid(grid, vertices, resolution, world_width, world_height)
                 except Exception:
+                    print(f"LONG-RANGE: Failed to process obstacle with vertexes")
                     pass
                     
         except Exception as e:
@@ -1224,10 +1432,10 @@ class ir_gym(env_base):
     
     def _add_circular_obstacle_to_grid(self, grid, center_x, center_y, radius, resolution, world_width, world_height):
         """Add a circular obstacle to the grid using the same method as PAR."""
-        # Convert to grid coordinates
-        grid_center_x = int(center_x / resolution)
-        grid_center_y = int(center_y / resolution)
-        grid_radius = int(radius / resolution) + 1
+        # Convert to grid coordinates with proper rounding
+        grid_center_x = int(round(center_x / resolution))
+        grid_center_y = int(round(center_y / resolution))
+        grid_radius = int(round(radius / resolution)) + 1
         
         grid_height = len(grid)
         grid_width = len(grid[0]) if grid_height > 0 else 0
@@ -1248,20 +1456,44 @@ class ir_gym(env_base):
         grid_height = len(grid)
         grid_width = len(grid[0]) if grid_height > 0 else 0
         
-        # Convert vertices to grid coordinates
+        # Convert vertices to grid coordinates using floor to preserve obstacle thickness
         grid_vertices = [(int(v[0] / resolution), int(v[1] / resolution)) for v in vertices]
+        print(f"LONG-RANGE: Grid vertices: {grid_vertices}")
         
         # Find bounding box
         min_x = min(v[0] for v in grid_vertices)
         max_x = max(v[0] for v in grid_vertices)
         min_y = min(v[1] for v in grid_vertices)
         max_y = max(v[1] for v in grid_vertices)
+        print(f"LONG-RANGE: Bounding box: x=[{min_x}, {max_x}], y=[{min_y}, {max_y}]")
         
         # Mark grid cells within the polygon as obstacles
+        obstacle_count = 0
         for i in range(max(0, min_y), min(grid_height, max_y + 1)):
             for j in range(max(0, min_x), min(grid_width, max_x + 1)):
                 if self._point_in_polygon(j, i, grid_vertices):
                     grid[i][j] = 1  # Mark as obstacle
+                    obstacle_count += 1
+        
+        # PATCH: Ensure obstacles starting from x=0.0 occupy grid column index 0
+        for v in vertices:
+            if v[0] == 0.0:  # If obstacle starts from x=0.0
+                for i in range(max(0, min_y), min(grid_height, max_y + 1)):
+                    if grid[i][0] == 0:  # If column 0 cell is not already marked
+                        grid[i][0] = 1
+                        obstacle_count += 1
+                break  # Only need to check once per obstacle
+
+        # PATCH: Ensure obstacles starting from y=0.0 occupy grid row index 0
+        for v in vertices:
+            if v[1] == 0.0:  # If obstacle starts from y=0.0
+                for j in range(max(0, min_x), min(grid_width, max_x + 1)):
+                    if grid[0][j] == 0:  # If row 0 cell is not already marked
+                        grid[0][j] = 1
+                        obstacle_count += 1
+                break  # Only need to check once per obstacle
+        
+        print(f"LONG-RANGE: Marked {obstacle_count} grid cells as obstacles")
     
     def _point_in_polygon(self, x, y, vertices):
         """Check if a point is inside a polygon using ray casting algorithm."""
@@ -1283,27 +1515,15 @@ class ir_gym(env_base):
         return inside
     
     def _add_map_boundaries_as_obstacles(self, grid, world_width, world_height, resolution):
-        """Add map boundaries as obstacles to prevent path planning outside the map."""
+        """Add map boundaries as obstacles to prevent path planning outside the map.
+        
+        This method is now deprecated. Boundary checking is handled dynamically
+        in the GlobalPathPlanner._is_grid_position_valid method.
+        """
         try:
-            grid_height = len(grid)
-            grid_width = len(grid[0]) if grid_height > 0 else 0
-            
-            # Add boundary obstacles (1-cell thick border)
-            # Top and bottom boundaries
-            for j in range(grid_width):
-                if 0 < grid_height:  # Top boundary
-                    grid[0][j] = 1
-                if grid_height > 1:  # Bottom boundary
-                    grid[grid_height - 1][j] = 1
-            
-            # Left and right boundaries
-            for i in range(grid_height):
-                if 0 < grid_width:  # Left boundary
-                    grid[i][0] = 1
-                if grid_width > 1:  # Right boundary
-                    grid[i][grid_width - 1] = 1
-            
-            print(f"LONG-RANGE: Added map boundaries as obstacles (grid: {grid_width}x{grid_height}, world: {world_width}x{world_height})")
+            # Note: We no longer pre-mark boundaries as obstacles.
+            # Instead, boundary checking is done dynamically during path planning.
+            print(f"LONG-RANGE: Boundary checking is now handled dynamically (grid: {len(grid[0])}x{len(grid)}, world: {world_width}x{world_height})")
             
         except Exception as e:
             print(f"LONG-RANGE BOUNDARY ERROR: {e}")
@@ -1324,6 +1544,40 @@ class ir_gym(env_base):
                     print(f"LONG-RANGE: Logged waypoint data for {len(waypoint_data)} agents")
         except Exception as e:
             print(f"LONG-RANGE LOGGING ERROR: {e}")
+
+    def _log_discretized_grid(self, grid, resolution, world_width, world_height):
+        """Log discretized grid map for debugging."""
+        try:
+            if hasattr(self, '_test_logger') and self._test_logger:
+                print(f"DEBUG: Logging discretized grid map")
+                
+                # Create grid info
+                grid_info = {
+                    'grid_resolution': resolution,
+                    'world_width': world_width,
+                    'world_height': world_height,
+                    'grid_width': len(grid[0]) if grid else 0,
+                    'grid_height': len(grid) if grid else 0,
+                    'grid_data': grid
+                }
+                
+                # Add to episode data
+                if hasattr(self._test_logger, 'current_episode_data'):
+                    self._test_logger.current_episode_data['discretized_grid'] = grid_info
+                    print(f"LONG-RANGE: Logged discretized grid map")
+                
+                # Print grid visualization for debugging
+                print(f"LONG-RANGE GRID MAP:")
+                print(f"  World: {world_width}x{world_height}, Grid: {len(grid[0])}x{len(grid)}, Resolution: {resolution}")
+                print(f"  Grid visualization (0=free, 1=obstacle):")
+                for i, row in enumerate(grid):
+                    row_str = ''.join(['0' if cell == 0 else '1' for cell in row])
+                    print(f"    Row {i:2d}: {row_str}")
+                    
+            else:
+                print(f"DEBUG: No test logger available for grid map")
+        except Exception as e:
+            print(f"LONG-RANGE GRID LOG ERROR: {e}")
 
     def _get_agent_neighbor_states(self, agent_id, agent_states, neighbor_states_nested):
         """Return neighbor state mapping for a specific agent.

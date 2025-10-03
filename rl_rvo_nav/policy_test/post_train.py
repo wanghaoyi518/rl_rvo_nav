@@ -13,6 +13,10 @@ class post_train:
         self.env = env
         self.num_episodes=num_episodes
         self.max_ep_len = max_ep_len
+        
+        # Set the environment's max episode steps to match our max_ep_len
+        if hasattr(self.env, '_max_episode_steps'):
+            self.env._max_episode_steps = max_ep_len
         self.acceler_vel = acceler_vel
         self.reset_mode = reset_mode
         self.render=render
@@ -94,10 +98,15 @@ class post_train:
             # Log step data
             robot_positions = self.test_logger.get_robot_positions_from_env(self.env)
             robot_velocities = self.test_logger.get_robot_velocities_from_env(self.env)
+            
+            # Get current goals for long-range navigation
+            current_goals = self.test_logger.get_current_goals_from_env(self.env)
+            
             step_info = {
                 'reward': float(r[0]),
                 'done': bool(np.max(d)),
-                'info': info.tolist() if hasattr(info, 'tolist') else info
+                'info': info.tolist() if hasattr(info, 'tolist') else info,
+                'current_goals': current_goals
             }
             self.test_logger.log_step(robot_positions, robot_velocities, step_info)
 
@@ -109,12 +118,35 @@ class post_train:
             ep_len += 1
             figure_id += 1
 
-            if np.max(d) or (ep_len == self.max_ep_len) or np.min(info):
+            # Extract done flags from info if it's a list of dictionaries
+            if isinstance(info, list) and len(info) > 0 and isinstance(info[0], dict):
+                done_flags = [info_item.get('done', False) for info_item in info]
+                episode_success = all(done_flags)
+            else:
+                # Fallback for old format
+                episode_success = bool(np.min(info)) if hasattr(info, '__iter__') and not isinstance(info, dict) else False
+            
+            # Determine termination conditions
+            long_range_enabled = False
+            try:
+                long_range_enabled = bool(getattr(self.env.ir_gym, 'enable_long_range_nav', False))
+            except Exception:
+                long_range_enabled = False
+
+            # Detect any collision directly from robots (authoritative)
+            any_collision = False
+            try:
+                any_collision = any(getattr(robot, 'collision_flag', False) for robot in self.env.ir_gym.robot_list)
+            except Exception:
+                any_collision = False
+
+            # End episode when:
+            # - Success (all agents reached final goal via info['done'])
+            # - Any collision occurs
+            # - Max episode length reached
+            if episode_success or any_collision or (ep_len == self.max_ep_len):
                 speed = np.mean(speed_list)
                 figure_id = 0
-                
-                # Determine episode success and failure reason
-                episode_success = bool(np.min(info))
                 failure_reason = None
                 
                 if episode_success:
@@ -144,7 +176,7 @@ class post_train:
                 n += 1
                 episode_started = False  # Reset for next episode
 
-                if np.min(info):
+                if episode_success:
                     sn+=1
                     
                 # Save GIF regardless of success or failure when --save or --once is used

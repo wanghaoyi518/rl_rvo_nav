@@ -274,6 +274,14 @@ class TestVisualizer:
         # Get waypoint data for long-range navigation
         waypoint_data = episode_data.get('waypoint_data', {})
         
+        # If goal_positions are missing, fall back to final_goal from waypoint_data
+        if (not goal_positions) and waypoint_data:
+            try:
+                goal_positions = [v.get('final_goal') for v in waypoint_data.values() if isinstance(v, dict) and 'final_goal' in v]
+                goal_positions = [g for g in goal_positions if g is not None]
+            except Exception:
+                pass
+        
         # Draw static map elements (obstacles, start positions, goal positions)
         self._draw_map_elements(ax, start_positions, goal_positions)
         
@@ -413,46 +421,49 @@ class TestVisualizer:
                 color = self.agent_colors[agent_id % len(self.agent_colors)]
                 
                 waypoints = agent_data.get('waypoints', [])
-                if len(waypoints) < 2:
+                if len(waypoints) < 1:
                     continue
                 
-                # Draw waypoint lines
-                waypoint_x = [wp[0] for wp in waypoints]
-                waypoint_y = [wp[1] for wp in waypoints]
-                
-                # Draw connecting lines between waypoints
-                ax.plot(waypoint_x, waypoint_y, color=color, linewidth=self.waypoint_line_width,
-                       alpha=self.waypoint_alpha, linestyle='-', zorder=1)
-                
-                # Draw waypoint points
-                for i, (x, y) in enumerate(waypoints):
-                    if i == 0:  # Start waypoint
-                        # Larger circle for start
-                        circle = patches.Circle((x, y), self.waypoint_radius * 1.2, 
-                                              color=color, alpha=0.9, zorder=2)
-                        ax.add_patch(circle)
-                        # Add "S" label for start
-                        ax.text(x, y, 'S', ha='center', va='center', 
-                               fontsize=8, fontweight='bold', color='white', zorder=3)
-                    elif i == len(waypoints) - 1:  # End waypoint
-                        # Star for end
-                        star = patches.RegularPolygon((x, y), 5, radius=self.waypoint_radius * 1.2,
-                                                    orientation=0, color=color, alpha=0.9, zorder=2)
-                        ax.add_patch(star)
-                        # Add "E" label for end
-                        ax.text(x, y, 'E', ha='center', va='center', 
-                               fontsize=8, fontweight='bold', color='white', zorder=3)
-                    else:  # Intermediate waypoints
-                        # Regular circle for intermediate waypoints
-                        circle = patches.Circle((x, y), self.waypoint_radius, 
-                                              color=color, alpha=0.8, zorder=2)
-                        ax.add_patch(circle)
-                        # Add waypoint number
-                        ax.text(x, y, str(i), ha='center', va='center', 
-                               fontsize=6, fontweight='bold', color='white', zorder=3)
-                
-                # Add direction arrows on the path
-                self._draw_path_arrows(ax, waypoints, color)
+                if len(waypoints) == 1:
+                    # Single waypoint: draw as end point (E)
+                    x, y = waypoints[0][0], waypoints[0][1]
+                    star = patches.RegularPolygon((x, y), 5, radius=self.waypoint_radius * 1.2,
+                                                orientation=0, color=color, alpha=0.9, zorder=2)
+                    ax.add_patch(star)
+                    ax.text(x, y, 'E', ha='center', va='center', 
+                           fontsize=8, fontweight='bold', color='white', zorder=3)
+                else:
+                    # Draw waypoint lines
+                    waypoint_x = [wp[0] for wp in waypoints]
+                    waypoint_y = [wp[1] for wp in waypoints]
+                    
+                    # Draw connecting lines between waypoints
+                    ax.plot(waypoint_x, waypoint_y, color=color, linewidth=self.waypoint_line_width,
+                           alpha=self.waypoint_alpha, linestyle='-', zorder=1)
+                    
+                    # Draw waypoint points
+                    for i, (x, y) in enumerate(waypoints):
+                        if i == 0:  # Start waypoint
+                            circle = patches.Circle((x, y), self.waypoint_radius * 1.2, 
+                                                  color=color, alpha=0.9, zorder=2)
+                            ax.add_patch(circle)
+                            ax.text(x, y, 'S', ha='center', va='center', 
+                                   fontsize=8, fontweight='bold', color='white', zorder=3)
+                        elif i == len(waypoints) - 1:  # End waypoint
+                            star = patches.RegularPolygon((x, y), 5, radius=self.waypoint_radius * 1.2,
+                                                        orientation=0, color=color, alpha=0.9, zorder=2)
+                            ax.add_patch(star)
+                            ax.text(x, y, 'E', ha='center', va='center', 
+                                   fontsize=8, fontweight='bold', color='white', zorder=3)
+                        else:  # Intermediate waypoints
+                            circle = patches.Circle((x, y), self.waypoint_radius, 
+                                                  color=color, alpha=0.8, zorder=2)
+                            ax.add_patch(circle)
+                            ax.text(x, y, str(i), ha='center', va='center', 
+                                   fontsize=6, fontweight='bold', color='white', zorder=3)
+                    
+                    # Add direction arrows on the path
+                    self._draw_path_arrows(ax, waypoints, color)
                 
             except (ValueError, KeyError, IndexError) as e:
                 print(f"Warning: Could not draw waypoints for agent {agent_id_str}: {e}")
