@@ -4,15 +4,29 @@ from pathlib import Path
 import pickle
 import argparse
 from os.path import dirname, abspath
+import numpy as np
+import random
+import torch
 
 from rl_rvo_nav.policy_test.post_train import post_train
 
+# 设置固定随机种子
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 parser = argparse.ArgumentParser(description='policy test for long-range waypoint navigation')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
-parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')
-parser.add_argument('--arg_name', default='pre_train')
+# parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')
+# parser.add_argument('--arg_name', default='pre_train')
+parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_1000.pt')
+parser.add_argument('--arg_name', default='pre_train_obs_10_1/pre_train_obs_10_1')
 parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')

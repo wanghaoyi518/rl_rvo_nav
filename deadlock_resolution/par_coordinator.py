@@ -58,7 +58,20 @@ class PARCoordinator:
         
         # Create PAR environment
         workspace = self.get_workspace_info(agent_states)
-        self.par_environment = PAREnvironment(workspace, deadlock_participants, self.config)
+        # Ensure PAR uses the same resolution as long-range config if provided
+        par_cfg = dict(self.config) if isinstance(self.config, dict) else {}
+        try:
+            if hasattr(self, 'gym_env') and hasattr(self.gym_env, 'long_range_config'):
+                if isinstance(self.gym_env.long_range_config, dict):
+                    lr_res = self.gym_env.long_range_config.get('grid_resolution', None)
+                else:
+                    lr_res = getattr(self.gym_env.long_range_config, 'grid_resolution', None)
+                if lr_res is not None:
+                    par_cfg['GRID_RESOLUTION'] = float(lr_res)
+                    par_cfg['PAR_IGNORE_XY_RESO'] = True
+        except Exception:
+            pass
+        self.par_environment = PAREnvironment(workspace, deadlock_participants, par_cfg)
         
         # Build PAR environment
         sub_map, actor_set = self.par_environment.build_par_environment(agent_states)
@@ -120,12 +133,19 @@ class PARCoordinator:
             MAPFSearchResult: Solution from the PNR solver
         """
         # Prepare PAR solver input for logging
+        # Use the effective grid resolution from the built PAR environment (single source of truth)
+        effective_res = None
+        try:
+            if hasattr(self, 'par_environment') and hasattr(self.par_environment, 'grid_resolution'):
+                effective_res = float(self.par_environment.grid_resolution)
+        except Exception:
+            effective_res = None
         par_solver_input = {
             'start_positions': start_positions,
             'goal_positions': goal_positions,
             'participants': list(start_positions.keys()),
             'workspace_bounds': getattr(self.par_environment, 'workspace_bounds', {}),
-            'grid_resolution': self.config.get('GRID_RESOLUTION', 0.2),
+            'grid_resolution': (effective_res if (effective_res is not None and effective_res > 0) else self.config.get('GRID_RESOLUTION', 0.2)),
             'grid_offset': getattr(self.par_environment, 'grid_offset', (0, 0))  # Add grid_offset for debugging
         }
 
@@ -1041,6 +1061,8 @@ class PARCoordinator:
         offset_x = float(self.gym_env.offset_x)
         offset_y = float(self.gym_env.offset_y)
         
+        # NOTE: Return workspace bounds in continuous world coordinates (meters).
+        # Grid scaling should be handled inside the PAREnvironment when building grids.
         bounds = {
             'min_x': offset_x,
             'min_y': offset_y,
@@ -1058,7 +1080,7 @@ class PARCoordinator:
                 xy_reso = float(getattr(self.gym_env, 'xy_reso'))
         except Exception:
             pass
-        # Method A: force PAR resolution to match environment long-range resolution if available
+        # Method A: prefer using environment long-range grid_resolution if available
         desired_res = None
         try:
             if hasattr(self.gym_env, 'enable_long_range_nav') and getattr(self.gym_env, 'enable_long_range_nav'):
@@ -1067,15 +1089,18 @@ class PARCoordinator:
                     desired_res = float(cfg.get('grid_resolution', None)) if isinstance(cfg, dict) else float(getattr(cfg, 'grid_resolution', None))
         except Exception:
             desired_res = None
+        # If user explicitly provided grid_resolution, ignore xy_reso/map_matrix to avoid hardcoded resolution
         if desired_res is not None and desired_res > 0:
-            xy_reso = desired_res
+            xy_reso = None
+            map_matrix = None
         
         workspace = {
             'bounds': bounds,
             'obstacles': self._get_environment_obstacles(),
             'grid_resolution': (desired_res if (desired_res is not None and desired_res > 0) else self.config.get('GRID_RESOLUTION', 1.0)),
             'map_matrix': map_matrix,
-            'xy_reso': xy_reso,
+            # If we want to unify on grid_resolution for PAR, drop xy_reso by default
+            'xy_reso': (None if (desired_res is not None and desired_res > 0) else xy_reso),
             'offset_x': getattr(self.gym_env, 'offset_x', 0.0),
             'offset_y': getattr(self.gym_env, 'offset_y', 0.0)
         }

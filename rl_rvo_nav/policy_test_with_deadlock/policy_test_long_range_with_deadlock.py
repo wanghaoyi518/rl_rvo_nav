@@ -4,19 +4,33 @@ from pathlib import Path
 import pickle
 import argparse
 from os.path import dirname, abspath
+import numpy as np
+import random
+import torch
 
 from rl_rvo_nav.policy_test_with_deadlock.post_train_with_deadlock import post_train_with_deadlock
 
+# 设置固定随机种子
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 parser = argparse.ArgumentParser(description='policy test for long-range waypoint navigation with deadlock resolution')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
 parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')
 parser.add_argument('--arg_name', default='pre_train')
+# parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_100.pt')
+# parser.add_argument('--arg_name', default='pre_train_obs_10_1/pre_train_obs_10_1')
 parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='2')
+parser.add_argument('--robot_number', type=int, default='4')
 parser.add_argument('--num_episodes', type=int, default='1')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
@@ -30,7 +44,7 @@ parser.add_argument('--long_range', action='store_true', default=True)
 parser.add_argument('--grid_resolution', type=float, default=0.5)
 parser.add_argument('--waypoint_spacing', type=float, default=2.0)
 parser.add_argument('--reach_threshold', type=float, default=0.2)
-parser.add_argument('--waypoint_separation_manhattan', type=float, default=2.0)
+parser.add_argument('--waypoint_separation_manhattan', type=float, default=2.0) # for separate waypoints when generating waypoints for multiple agents
 
 # Deadlock resolution
 parser.add_argument('--enable_deadlock_resolution', action='store_true', default=True)

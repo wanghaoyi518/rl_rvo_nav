@@ -12,17 +12,17 @@ from rl_rvo_nav.policy.policy_rnn_ac import rnn_ac
 
 # 路径设置
 cur_path = Path(__file__).parent
-world_abs_path = str(cur_path/'mode7_stage3_complex.yaml')
+world_abs_path = str(cur_path/'mode7_stage4_complex+.yaml')
 
 # 默认参数
 counter = 0
 
-parser = argparse.ArgumentParser(description='Mode 7 Stage 3 Curriculum Learning - Complex Random Polygons')
+parser = argparse.ArgumentParser(description='Mode 7 Stage 4 Curriculum Learning - Complex Random Polygons')
 
 # 环境参数组
 par_env = parser.add_argument_group('par env', 'environment parameters') 
 par_env.add_argument('--env_name', default='mrnav-v1')
-par_env.add_argument('--world_path', default='mode7_stage4_complex+.yaml')  # Stage 3配置
+par_env.add_argument('--world_path', default='mode7_stage4_complex+.yaml')  # Stage 4配置
 par_env.add_argument('--robot_number', type=int, default=4)
 par_env.add_argument('--init_mode', default=7)  # Mode 7: random with distance constraint + random polygons
 par_env.add_argument('--reset_mode', default=7)  # Mode 7 reset
@@ -56,9 +56,9 @@ par_policy.add_argument('--rnn_mode', default='biGRU')
 
 # 训练参数组
 par_train = parser.add_argument_group('par train', 'train parameters') 
-par_train.add_argument('--pi_lr', type=float, default=2e-6)  # Stage 3: 进一步降低学习率
+par_train.add_argument('--pi_lr', type=float, default=2e-6)  
 par_train.add_argument('--vf_lr', type=float, default=3e-5)
-par_train.add_argument('--train_epoch', type=int, default=500)  # Stage 3: 较长训练周期
+par_train.add_argument('--train_epoch', type=int, default=500)  
 par_train.add_argument('--steps_per_epoch', type=int, default=500)
 par_train.add_argument('--max_ep_len', default=150)
 par_train.add_argument('--gamma', default=0.99)
@@ -75,16 +75,16 @@ par_train.add_argument('--save_freq', default=50)
 par_train.add_argument('--save_figure', default=False)
 par_train.add_argument('--figure_save_path', default='figure')
 par_train.add_argument('--save_path', default=str(cur_path / 'model_save') + '/')
-par_train.add_argument('--save_name', default='r4_mode7_stage4_')  
+par_train.add_argument('--save_name', default='pre_train_obs_')  
 par_train.add_argument('--load_path', default=str(cur_path / 'model_save')+ '/')
-par_train.add_argument('--load_name', default='r4_mode7_stage3_8_0/r4_mode7_stage3_8_0_check_point_500.pt')  
+par_train.add_argument('--load_name', default='pre_train_check_point_1000.pt')  
 par_train.add_argument('--save_result', type=bool, default=True)
 par_train.add_argument('--lr_decay_epoch', type=int, default=1000)
 par_train.add_argument('--max_update_num', type=int, default=10)
 
 # 课程学习特定参数
 par_curriculum = parser.add_argument_group('par curriculum', 'curriculum learning parameters')
-par_curriculum.add_argument('--curriculum_stage', default=3, type=int, help='Current curriculum stage (1-3)')
+par_curriculum.add_argument('--curriculum_stage', default=4, type=int, help='Current curriculum stage (1-3)')
 par_curriculum.add_argument('--curriculum_auto', action='store_true', help='Enable automatic curriculum progression')
 par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, help='Performance threshold for stage advancement')
 
@@ -92,7 +92,7 @@ par_curriculum.add_argument('--performance_threshold', type=float, default=0.8, 
 args = parser.parse_args([
     '--train_epoch', '1000', 
     '--robot_number', '10', 
-    '--load_name', 'r4_mode7_stage3_8_5/r4_mode7_stage3_8_5_check_point_250.pt', 
+    '--load_name', 'pre_train_check_point_1000.pt', 
     '--con_train', 
     '--use_gpu'
 ])
@@ -110,7 +110,7 @@ load_fname = args.load_path + args.load_name
 
 print("🎯 Mode 7 Stage 4 课程学习训练")
 print("=" * 60)
-print(f"📁 加载Stage 3模型: {load_fname}")
+print(f"📁 加载Stage 4模型: {load_fname}")
 print(f"📁 保存模型到: {model_abs_path}")
 print(f"⚙️  使用配置: {args.world_path}")
 print(f"🤖 机器人数量: {args.robot_number}")

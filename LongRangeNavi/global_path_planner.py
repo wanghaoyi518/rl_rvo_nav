@@ -180,8 +180,9 @@ class GlobalPathPlanner:
 
     def _world_to_grid(self, xy: Tuple[float, float]) -> Tuple[int, int]:
         x, y = float(xy[0]), float(xy[1])
-        j = int(round(x / self._resolution))
-        i = int(round(y / self._resolution))
+        # Use floor-style indexing consistent with PAR (no +0.5 here)
+        j = int(x / self._resolution)
+        i = int(y / self._resolution)
         return i, j
 
     def _is_grid_position_valid(self, grid_i: int, grid_j: int) -> bool:
@@ -189,15 +190,20 @@ class GlobalPathPlanner:
         # Check bounds (grid indices should be in range [0, len-1])
         if (grid_i < 0 or grid_i >= len(self._grid) or 
             grid_j < 0 or grid_j >= len(self._grid[0])):
+            print(f"DEBUG BOUNDS: Position ({grid_i}, {grid_j}) out of bounds. Grid size: {len(self._grid)} x {len(self._grid[0])}")
             return False
         
         # Check if position is on obstacle
-        return self._grid[grid_i][grid_j] == 0
+        is_free = self._grid[grid_i][grid_j] == 0
+        if not is_free:
+            print(f"DEBUG OBSTACLE: Position ({grid_i}, {grid_j}) is on obstacle")
+        return is_free
 
     def _grid_to_world(self, ij: Tuple[int, int]) -> Tuple[float, float]:
         i, j = int(ij[0]), int(ij[1])
-        x = float(j) * self._resolution
-        y = float(i) * self._resolution
+        # Return cell centers to match PAR/logging convention
+        x = (float(j) + 0.5) * self._resolution
+        y = (float(i) + 0.5) * self._resolution
         return (x, y)
 
     def _dist2(self, a: Tuple[float, float], b: Tuple[float, float]) -> float:

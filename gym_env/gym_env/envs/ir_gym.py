@@ -69,6 +69,11 @@ class ir_gym(env_base):
         # Debug: Print long-range navigation status (can be removed in production)
         if self.enable_long_range_nav:
             print(f"LONG-RANGE: Navigation enabled with GlobalPathPlanner={GlobalPathPlanner is not None}, WaypointManager={WaypointManager is not None}")
+            print(f"LONG-RANGE: Config received: {self.long_range_config}")
+            if isinstance(self.long_range_config, dict):
+                print(f"LONG-RANGE: grid_resolution from config: {self.long_range_config.get('grid_resolution', 'NOT_FOUND')}")
+            else:
+                print(f"LONG-RANGE: grid_resolution from config object: {getattr(self.long_range_config, 'grid_resolution', 'NOT_FOUND')}")
         
 
     def cal_des_omni_list(self):
@@ -149,9 +154,8 @@ class ir_gym(env_base):
             if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
                 try:
                     for aid, robot in enumerate(self.robot_list):
+                        # Do not skip PAR agents; they should also progress waypoints when using RL execution
                         mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                        if mode == 'par':
-                            continue
                         if aid in self._waypoint_managers:
                             pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
                             reached, final_reached = self._waypoint_managers[aid].update(pos)
@@ -252,22 +256,13 @@ class ir_gym(env_base):
         else:
             arrive_reward_flag = False
 
-        # Check if this robot is in PAR mode
+        # Check if this robot is in PAR mode (kept for potential logging), but do not skip RVO
         robot_id = self.robot_list.index(robot)
-        current_mode = self.get_current_mode(robot_id) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+        _ = self.get_current_mode(robot_id) if hasattr(self, 'get_current_mode') else 'rl_rvo'
         
-        # Use combined line obstacles (lines + polygon edges)
+        # Use combined line obstacles (lines + polygon edges) and always run RVO
         combined_lines = self._get_combined_obs_lines()
-        
-        # In PAR mode, skip RVO processing to avoid overriding PAR actions
-        if current_mode == 'par':
-            print(f"PAR MODE: Skipping RVO for robot {robot_id}, using PAR action directly")
-            obs_vo_list = []
-            vo_flag = False
-            min_exp_time = float('inf')
-            collision_flag = False
-        else:
-            obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, combined_lines, action, **kwargs)
+        obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, combined_lines, action, **kwargs)
 
         # If collision detected by RVO, call collision_check to record detailed collision information
         if collision_flag and not robot.collision_flag:
@@ -374,13 +369,18 @@ class ir_gym(env_base):
             try:
                 # Build occupancy grid from workspace if available via PAR environment helper
                 grid, resolution, world_w, world_h = self._build_occupancy_grid_for_long_range()
+                print(f"LONG-RANGE: Grid building returned resolution={resolution}")
                 if grid is not None:
                     # Get waypoint spacing from config (handle both dict and object)
                     if isinstance(self.long_range_config, dict):
                         waypoint_spacing = self.long_range_config.get('waypoint_min_spacing', 5.0)
                     else:
                         waypoint_spacing = getattr(self.long_range_config, 'waypoint_min_spacing', 5.0)
+                    print(f"LONG-RANGE: Initializing GlobalPathPlanner with resolution={resolution}, waypoint_spacing={waypoint_spacing}")
+                    print(f"LONG-RANGE: Grid actual dimensions: {len(grid)} x {len(grid[0]) if grid else 0}")
                     self._global_planner = GlobalPathPlanner(grid, resolution, waypoint_spacing)
+                    print(f"LONG-RANGE: GlobalPathPlanner initialized with _resolution={self._global_planner._resolution}")
+                    print(f"LONG-RANGE: GlobalPathPlanner grid dimensions: {len(self._global_planner._grid)} x {len(self._global_planner._grid[0]) if self._global_planner._grid else 0}")
                     # Initialize per-agent waypoint managers
                     self._waypoint_managers = {}
                     waypoint_data = {}  # Store waypoint data for logging
@@ -695,62 +695,65 @@ class ir_gym(env_base):
                                 self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
                                 self.deadlock_logger.log_par_solution_paths(par_solution, valid_participants)
                             
-                            # Set PAR mode for all valid participants and initialize PAR executor
+                            # Set PAR mode for all valid participants and initialize PAR waypoints
                             for participant_id in valid_participants:
                                 old_mode = self.get_current_mode(participant_id)
                                 self.state_manager.set_par_mode(participant_id, par_solution)
                                 
-                                # Initialize PAR executor with solution data
-                                if par_solution and hasattr(par_solution, 'agents_moves'):
-                                    # Set start position (use current continuous position to avoid long pre-align phase)
-                                    agent_state = agent_states.get(participant_id, {})
-                                    if 'position' in agent_state:
-                                        start_pos = agent_state['position']
-                                        if len(start_pos) >= 2:
-                                            self.par_executor.set_agent_start_position(participant_id, (float(start_pos[0]), float(start_pos[1])))
-                                    
-                                    # Set goal position (use original goal)
-                                    if 'goal' in agent_state and agent_state['goal'] is not None:
-                                        goal = agent_state['goal']
-                                        if isinstance(goal, list) and len(goal) >= 2:
-                                            goal_x = goal[0][0] if isinstance(goal[0], list) and len(goal[0]) > 0 else goal[0]
-                                            goal_y = goal[1][0] if isinstance(goal[1], list) and len(goal[1]) > 0 else goal[1]
-                                            self.par_executor.set_agent_goal_position(participant_id, (float(goal_x), float(goal_y)))
-                                    
-                                    # Use coordinator path (grid) and map to continuous coordinates
+                                # Build PAR waypoints and inject into WaypointManager
+                                grid_path = []
+                                try:
+                                    grid_path = self.par_coordinator.get_agent_path(participant_id)
+                                    print(f"PAR INIT: Agent {participant_id} grid path length: {len(grid_path)}")
+                                    if grid_path:
+                                        print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
+                                except Exception as e:
+                                    print(f"PAR INIT: Failed to get grid path for agent {participant_id}: {e}")
                                     grid_path = []
+                                
+                                cont_path = []
+                                if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
+                                    for gp in grid_path:
+                                        try:
+                                            if hasattr(gp, 'x') and hasattr(gp, 'y'):
+                                                grid_coord = (gp.x, gp.y)
+                                            else:
+                                                grid_coord = gp
+                                            cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
+                                            cont_path.append(cont)
+                                        except Exception as e:
+                                            print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
+                                            pass
+                                else:
+                                    print(f"PAR INIT: Cannot convert path for agent {participant_id} - missing environment or grid_to_continuous method")
+                                
+                                # Inject as waypoints if available
+                                if cont_path and isinstance(self._waypoint_managers, dict):
                                     try:
-                                        grid_path = self.par_coordinator.get_agent_path(participant_id)
-                                        print(f"PAR INIT: Agent {participant_id} grid path length: {len(grid_path)}")
-                                        if grid_path:
-                                            print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
+                                        tol = 0.5
+                                        try:
+                                            tol = self.deadlock_config.get('GOAL_TOLERANCE') if self.deadlock_config else 0.5
+                                        except Exception:
+                                            tol = 0.5
+                                        # Ensure save buffer exists
+                                        if not hasattr(self, '_saved_lr_managers'):
+                                            self._saved_lr_managers = {}
+                                        # Save current LR manager if not already a PAR manager
+                                        if participant_id in self._waypoint_managers:
+                                            cur_mgr = self._waypoint_managers[participant_id]
+                                            if not hasattr(cur_mgr, '_is_par_manager'):
+                                                self._saved_lr_managers[participant_id] = cur_mgr
+                                        # Replace manager for this agent with PAR waypoints and mark as PAR
+                                        par_mgr = WaypointManager(participant_id, cont_path, reach_threshold=tol)
+                                        setattr(par_mgr, '_is_par_manager', True)
+                                        self._waypoint_managers[participant_id] = par_mgr
+                                        cur_goal = par_mgr.get_current_goal()
+                                        if cur_goal is not None:
+                                            import numpy as np
+                                            self.robot_list[participant_id].goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
+                                        print(f"PAR INIT: Injected {len(cont_path)} continuous waypoints for agent {participant_id}")
                                     except Exception as e:
-                                        print(f"PAR INIT: Failed to get grid path for agent {participant_id}: {e}")
-                                        grid_path = []
-                                    
-                                    if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
-                                        cont_path = []
-                                        for gp in grid_path:
-                                            try:
-                                                # Convert Point object to (x, y) tuple if needed
-                                                if hasattr(gp, 'x') and hasattr(gp, 'y'):
-                                                    grid_coord = (gp.x, gp.y)
-                                                else:
-                                                    grid_coord = gp
-                                                
-                                                cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
-                                                cont_path.append(cont)
-                                            except Exception as e:
-                                                print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
-                                                pass
-                                        if cont_path:
-                                            self.par_executor.set_agent_path(participant_id, cont_path)
-                                            print(f"PAR INIT: Set continuous path for agent {participant_id}, length: {len(cont_path)}")
-                                            print(f"  Continuous path: {cont_path[:3]}...{cont_path[-3:] if len(cont_path) > 6 else cont_path[3:]}")
-                                        else:
-                                            print(f"PAR INIT: No continuous path generated for agent {participant_id}")
-                                    else:
-                                        print(f"PAR INIT: Cannot convert path for agent {participant_id} - missing environment or grid_to_continuous method")
+                                        print(f"PAR INIT: Failed to inject waypoints for agent {participant_id}: {e}")
                                 
                                 # Log mode switch
                                 if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
@@ -768,239 +771,17 @@ class ir_gym(env_base):
             else:
                 print(f"DEBUG: Agent {agent_id} not in rl_rvo mode, skipping deadlock detection")
             
-            # Execute action based on current mode
-            if current_mode == 'par':
-                try:
-                    par_action = self.par_executor.execute_par_step(agent_id, agent_states)
-                    if par_action and 'action' in par_action:
-                        modified_action_list[agent_id] = par_action['action']
-                        print(f"PAR ACTION APPLIED: Agent {agent_id} action: {par_action['action']}")
-                        
-                        # Handle direct position setting if specified
-                        if 'set_position' in par_action:
-                            # Defer actual write until after dynamics update to avoid being overwritten
-                            if not hasattr(self, '_par_last_set_positions'):
-                                self._par_last_set_positions = {}
-                            self._par_last_set_positions[agent_id] = {
-                                'pos': par_action['set_position'],
-                                'path_index': par_action.get('path_index'),
-                                'path_length': par_action.get('path_length')
-                            }
-                            print(f"PAR POSITION QUEUED: Agent {agent_id} -> {par_action['set_position']}")
-                        
-                        # Log PAR execution
-                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                            self.deadlock_logger.log_par_execution(agent_id, par_action['action'], 'executing')
-                    
-                    # Group exit policy: only exit PAR when ALL current PAR participants are complete
-                    progress = self.par_executor.get_path_progress(agent_id) if hasattr(self.par_executor, 'get_path_progress') else {
-                        'is_complete': False
-                    }
-                    all_participants_complete = False
-                    try:
-                        current_par_agents = []
-                        for aid2 in range(len(self.robot_list)):
-                            if self.get_current_mode(aid2) == 'par':
-                                current_par_agents.append(aid2)
-                        if len(current_par_agents) > 0:
-                            all_participants_complete = True
-                            for pid in current_par_agents:
-                                other_progress = self.par_executor.get_path_progress(pid) if hasattr(self.par_executor, 'get_path_progress') else {'is_complete': False}
-                                if not other_progress.get('is_complete', False):
-                                    all_participants_complete = False
-                                    break
-                    except Exception:
-                        all_participants_complete = False
-
-                    if progress.get('is_complete', False) and all_participants_complete:
-                        old_mode = self.get_current_mode(agent_id)
-                        self.state_manager.set_rl_rvo_mode(agent_id)
-                        
-                        # Log agent positions when switching from MAPF back to RL
-                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                            agent_positions = {}
-                            for participant_id in current_par_agents:
-                                if participant_id in agent_states:
-                                    agent_state = agent_states[participant_id]
-                                    if 'position' in agent_state:
-                                        agent_positions[participant_id] = agent_state['position']
-                            
-                            self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "All PAR participants completed")
-                            agent_idx = progress.get('current_index', 0)
-                            self.deadlock_logger.log_par_completion(agent_id, agent_idx)
-                            self.deadlock_logger.log_mapf_to_rl_positions(agent_positions)
-                except Exception as e:
-                    print(f"❌ PAR execution failed for agent {agent_id}: {e}")
-                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                        self.deadlock_logger.log_error("PAR_EXECUTION", e, {"agent_id": agent_id})
-                        self.deadlock_logger.log_par_execution(agent_id, None, 'failure')
-                    
-                    # Fall back to RL_RVO mode
-                    old_mode = self.get_current_mode(agent_id)
-                    self.state_manager.set_rl_rvo_mode(agent_id)
-                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                        self.deadlock_logger.log_mode_switch(agent_id, old_mode, 'rl_rvo', "PAR execution failed")
+            # Execute action based on current mode: PAR agents no longer override actions; RL path only
         
         # BEFORE dynamics: apply deferred PAR position sets with safety check, so RVO/collision sees updated positions
-        try:
-            if hasattr(self, '_par_last_set_positions') and isinstance(self._par_last_set_positions, dict):
-                # Init per-agent blocked counters and cooldown maps
-                if not hasattr(self, '_par_blocked_counts'):
-                    self._par_blocked_counts = {}
-                if not hasattr(self, '_par_cooldown_until'):
-                    self._par_cooldown_until = {}
-                # thresholds
-                K_block_steps = 3
-                cooldown_steps = 10
-                # Cache current positions for collision check
-                current_positions = {}
-                radii = {}
-                for idx, r in enumerate(self.robot_list):
-                    try:
-                        current_positions[idx] = (float(r.state[0, 0]), float(r.state[1, 0]))
-                        radii[idx] = float(getattr(r, 'radius_collision', 0.2))
-                    except Exception:
-                        continue
-                applied_positions = {}
-
-                # Disabled: Immediate early-exit if current overlap already exists
-                # This was causing premature PAR exits. PAR algorithm should handle overlaps.
-                # try:
-                #     for aid in range(len(self.robot_list)):
-                #         try:
-                #             if self.get_current_mode(aid) != 'par':
-                #                 continue
-                #         except Exception:
-                #             continue
-                #         r_i = radii.get(aid, 0.2)
-                #         pos_i = current_positions.get(aid)
-                #         if pos_i is None:
-                #             continue
-                #         overlapped = False
-                #         for other_id in range(len(self.robot_list)):
-                #             if other_id == aid:
-                #                 continue
-                #             pos_j = current_positions.get(other_id)
-                #             if pos_j is None:
-                #                 continue
-                #             r_j = radii.get(other_id, 0.2)
-                #             dx = pos_i[0] - pos_j[0]
-                #             dy = pos_i[1] - pos_j[1]
-                #             # Add tolerance to avoid premature exit due to minor overlaps
-                #             overlap_tolerance = 0.1  # 10cm tolerance
-                #             if (dx*dx + dy*dy) ** 0.5 < (r_i + r_j + overlap_tolerance):
-                #                 overlapped = True
-                #                 blocker = other_id
-                #                 break
-                #         if overlapped:
-                #             # Early exit PAR immediately for this agent
-                #             try:
-                #                 old_mode = self.get_current_mode(aid)
-                #                 if hasattr(self, 'step_count'):
-                #                     self._par_cooldown_until[aid] = int(self.step_count) + cooldown_steps
-                #                 if hasattr(self, 'state_manager') and self.state_manager:
-                #                     self.state_manager.set_rl_rvo_mode(aid)
-                #                 if hasattr(self, 'par_executor') and hasattr(self.par_executor, 'reset_agent'):
-                #                     self.par_executor.reset_agent(aid)
-                #                 if aid in self._par_last_set_positions:
-                #                     del self._par_last_set_positions[aid]
-                #                 if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                #                     self.deadlock_logger.log_mode_switch(aid, old_mode, 'rl_rvo', 'par_early_exit_overlap')
-                #                 print(f"PAR EARLY EXIT: Agent {aid} -> rl_rvo due to existing overlap with agent {blocker}")
-                #             except Exception:
-                #                 pass
-                # except Exception:
-                #     pass
-
-                for aid, meta in list(self._par_last_set_positions.items()):
-                    pos = meta['pos'] if isinstance(meta, dict) else meta
-                    if aid < len(self.robot_list) and isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                        proposed = (float(pos[0]), float(pos[1]))
-                        # Collision check vs all agents (use applied pos if available, else current)
-                        blocked = False
-                        blocker = None
-                        r_i = radii.get(aid, 0.2)
-                        for other_id in range(len(self.robot_list)):
-                            if other_id == aid:
-                                continue
-                            other_pos = applied_positions.get(other_id, current_positions.get(other_id))
-                            if other_pos is None:
-                                continue
-                            r_j = radii.get(other_id, 0.2)
-                            dx = proposed[0] - other_pos[0]
-                            dy = proposed[1] - other_pos[1]
-                            if (dx*dx + dy*dy) ** 0.5 < (r_i + r_j):
-                                blocked = True
-                                blocker = other_id
-                                break
-
-                        if blocked:
-                            # In PAR algorithm, blocking should be handled by push-and-rotate mechanism
-                            # Don't roll back path index - let PAR algorithm resolve the conflict
-                            print(f"PAR BLOCKED: Agent {aid} at waypoint {meta.get('path_index', '?')} by agent {blocker}, but continuing PAR execution")
-                            
-                            # Even if blocked, still set position to prevent RL dynamics from modifying it
-                            # Keep the agent at its current PAR position to maintain PAR trajectory
-                            if 'set_position' in par_action:
-                                if not hasattr(self, '_par_last_set_positions'):
-                                    self._par_last_set_positions = {}
-                                # Use current position instead of planned position to avoid collision
-                                current_pos = self.get_agent_position(agent_states.get(aid, {}))
-                                if current_pos is not None:
-                                    self._par_last_set_positions[aid] = {
-                                        'pos': current_pos,
-                                        'path_index': meta.get('path_index'),
-                                        'path_length': meta.get('path_length')
-                                    }
-                                    print(f"PAR BLOCKED POSITION: Agent {aid} kept at current position {current_pos}")
-                            # Only count/early-exit if blocker is RL; if blocker is PAR, do not trigger early exit
-                            is_rl_blocker = True
-                            try:
-                                is_rl_blocker = (self.get_current_mode(blocker) != 'par')
-                            except Exception:
-                                is_rl_blocker = True
-
-                            if is_rl_blocker:
-                                # Increase blocked count; if exceed threshold, early-exit PAR
-                                self._par_blocked_counts[aid] = int(self._par_blocked_counts.get(aid, 0)) + 1
-                                if self._par_blocked_counts[aid] >= K_block_steps:
-                                    try:
-                                        old_mode = self.get_current_mode(aid)
-                                        # Cooldown until
-                                        if hasattr(self, 'step_count'):
-                                            self._par_cooldown_until[aid] = int(self.step_count) + cooldown_steps
-                                        # Switch back to RL
-                                        if hasattr(self, 'state_manager') and self.state_manager:
-                                            self.state_manager.set_rl_rvo_mode(aid)
-                                        # Reset executor state for this agent
-                                        if hasattr(self, 'par_executor') and hasattr(self.par_executor, 'reset_agent'):
-                                            self.par_executor.reset_agent(aid)
-                                        # Remove any queued set for this agent
-                                        if aid in self._par_last_set_positions:
-                                            del self._par_last_set_positions[aid]
-                                        # Log
-                                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                                            self.deadlock_logger.log_mode_switch(aid, old_mode, 'rl_rvo', 'par_early_exit_blocked')
-                                        print(f"PAR EARLY EXIT: Agent {aid} -> rl_rvo due to repeated blocking")
-                                    except Exception:
-                                        pass
-                            else:
-                                # Blocked by another PAR agent: do not accumulate toward early-exit
-                                self._par_blocked_counts[aid] = 0
-                            continue
-
-                        # Position will be applied before _step_pure_rl (moved above)
-                        applied_positions[aid] = proposed
-        except Exception:
-            pass
+        # Removed legacy PAR set_position collision handling and overrides
 
         # Before executing RL dynamics, align waypoint goal so observation uses current waypoint
         if self.enable_long_range_nav and isinstance(self._waypoint_managers, dict) and len(self._waypoint_managers) == len(self.robot_list):
             try:
                 for aid, robot in enumerate(self.robot_list):
+                    # Do not skip PAR agents; they should also progress waypoints when using RL execution
                     mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                    if mode == 'par':
-                        continue
                     if aid in self._waypoint_managers:
                         pos = (float(robot.state[0, 0]), float(robot.state[1, 0])) if hasattr(robot, 'state') else (0.0, 0.0)
                         # Progress waypoint once before observation/reward
@@ -1012,154 +793,70 @@ class ir_gym(env_base):
                                 robot.goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
                             except Exception:
                                 pass
+                        # PAR quick diagnostics: print per-step tracking status
+                        if mode == 'par':
+                            try:
+                                import numpy as np
+                                des_vec = np.squeeze(robot.cal_des_vel_omni())
+                                dvx = float(des_vec[0]) if np.size(des_vec) > 0 else 0.0
+                                dvy = float(des_vec[1]) if np.size(des_vec) > 1 else 0.0
+                                if cur_goal is not None:
+                                    gvx = float(cur_goal[0]) - float(pos[0])
+                                    gvy = float(cur_goal[1]) - float(pos[1])
+                                    des_norm = max(1e-8, (dvx * dvx + dvy * dvy) ** 0.5)
+                                    goal_norm = max(1e-8, (gvx * gvx + gvy * gvy) ** 0.5)
+                                    dot_val = (dvx * gvx + dvy * gvy) / (des_norm * goal_norm)
+                                    dot_val = max(-1.0, min(1.0, dot_val))
+                                    angle_deg = float(np.degrees(np.arccos(dot_val)))
+                                    goal_dist = float((gvx * gvx + gvy * gvy) ** 0.5)
+                                    print(f"PAR DEBUG Agent {aid}: pos={pos}, goal={cur_goal}, des_vel=({dvx:.3f},{dvy:.3f}), angle_deg={angle_deg:.1f}, speed={des_norm:.3f}, goal_dist={goal_dist:.3f}, reached={reached}, final={final_reached}")
+                                else:
+                                    print(f"PAR DEBUG Agent {aid}: pos={pos}, goal=None, des_vel=({dvx:.3f},{dvy:.3f}), speed={(dvx*dvx + dvy*dvy) ** 0.5:.3f}, reached={reached}, final={final_reached}")
+                            except Exception:
+                                pass
                 # Mark that we've progressed waypoint in this step to skip inside _step_pure_rl
                 self._wp_progressed_in_step = True
             except Exception:
                 pass
 
-        # Execute the modified actions using pure RL logic
-        # Pre-yield: prevent RL agents from moving into PAR agents (predictive one-step check)
+        # Execute the modified actions using pure RL logic (removed PAR set_position/yield/distance overrides)
+
+        # Apply speed cap for PAR agents to improve tracking of PAR waypoints
         try:
-            # Collect current PAR agent positions and radii
-            par_positions = []
-            for aid in range(len(self.robot_list)):
-                try:
-                    if self.get_current_mode(aid) == 'par':
-                        rx = float(self.robot_list[aid].state[0, 0])
-                        ry = float(self.robot_list[aid].state[1, 0])
-                        rr = float(getattr(self.robot_list[aid], 'radius_collision', 0.2))
-                        par_positions.append((aid, rx, ry, rr))
-                except Exception:
+            par_speed_cap = 0.1
+            try:
+                par_speed_cap = float(self.deadlock_config.get('PAR_TRACK_SPEED_LIMIT', 0.3)) if self.deadlock_config else 0.3
+            except Exception:
+                par_speed_cap = 0.3
+            for aid2 in range(len(modified_action_list)):
+                mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                if mode2 != 'par':
                     continue
-
-            # For each RL agent, if predicted next pos would collide with any PAR, freeze this step
-            if isinstance(modified_action_list, list) and len(par_positions) > 0:
-                dt = float(getattr(self, 'step_time', 0.1))
-                for rid in range(min(len(modified_action_list), len(self.robot_list))):
-                    try:
-                        if self.get_current_mode(rid) == 'par':
-                            continue
-                        act = modified_action_list[rid]
-                        if act is None or not hasattr(self.robot_list[rid], 'state'):
-                            continue
-                        vx = float(act[0]) if isinstance(act, (list, tuple)) else float(act[0])
-                        vy = float(act[1]) if isinstance(act, (list, tuple)) else float(act[1])
-                        cx = float(self.robot_list[rid].state[0, 0])
-                        cy = float(self.robot_list[rid].state[1, 0])
-                        # Predict one-step advance (omni model)
-                        nx = cx + vx * dt
-                        ny = cy + vy * dt
-                        r_rl = float(getattr(self.robot_list[rid], 'radius_collision', 0.2))
-                        will_collide = False
-                        for (paid, px, py, pr) in par_positions:
-                            dx = nx - px
-                            dy = ny - py
-                            if (dx*dx + dy*dy) ** 0.5 < (r_rl + pr):
-                                will_collide = True
-                                break
-                        if will_collide:
-                            import numpy as np
-                            modified_action_list[rid] = np.array([0.0, 0.0])
-                            print(f"RL YIELD: Agent {rid} frozen to avoid PAR collision")
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-        # PAR-RL distance detection and forced exit logic
-        try:
-            # Dynamic safety threshold based on agent radii
-            par_radius = 0.2  # Default PAR agent radius
-            rl_radius = 0.2   # Default RL agent radius
-            safety_threshold = (par_radius + rl_radius) + 0.5  # Distance threshold for PAR-RL collision detection
-            par_agents = []
-            rl_agents = []
-            
-            # Collect PAR and RL agent positions
-            for aid in range(len(self.robot_list)):
-                try:
-                    if self.get_current_mode(aid) == 'par':
-                        pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
-                        par_agents.append((aid, pos))
-                    else:
-                        pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
-                        rl_agents.append((aid, pos))
-                except Exception:
+                act = modified_action_list[aid2]
+                if act is None:
                     continue
-            
-            # Debug: Log PAR-RL agent counts
-            if par_agents or rl_agents:
-                print(f"PAR-RL CHECK: Step {self.step_count}, PAR agents: {len(par_agents)}, RL agents: {len(rl_agents)}, safety_threshold: {safety_threshold:.3f}")
-            
-            # Check distances between PAR and RL agents
-            for par_id, par_pos in par_agents:
-                for rl_id, rl_pos in rl_agents:
-                    distance = ((par_pos[0] - rl_pos[0])**2 + (par_pos[1] - rl_pos[1])**2)**0.5
-                    if distance < safety_threshold:
-                        print(f"PAR-RL COLLISION DETECTED: Agent {par_id} (PAR) and Agent {rl_id} (RL) distance={distance:.3f} < {safety_threshold}")
-                        self._force_par_agent_exit(par_id)
-                        break
-        except Exception as e:
-            print(f"Error in PAR-RL distance detection: {e}")
-
-        # Apply PAR positions BEFORE _step_pure_rl to ensure they are not overridden
-        try:
-            if hasattr(self, '_par_last_set_positions') and self._par_last_set_positions:
-                for aid, pos_info in self._par_last_set_positions.items():
-                    proposed = pos_info['pos']
-                    robot = self.robot_list[aid]
-                    if hasattr(robot, 'state'):
-                        try:
-                            # Clamp to world boundaries to prevent out-of-bounds during PAR
-                            wx = float(proposed[0])
-                            wy = float(proposed[1])
-                            wW = float(getattr(self, '_env_base__width', 10))
-                            wH = float(getattr(self, '_env_base__height', 10))
-                            wx = max(0.0, min(wW, wx))
-                            wy = max(0.0, min(wH, wy))
-                            robot.state[0, 0] = wx
-                            robot.state[1, 0] = wy
-                        except Exception:
-                            import numpy as np
-                            robot.state = np.array([[wx], [wy]])
-                    try:
-                        import numpy as np
-                        if hasattr(robot, 'vel_omni'):
-                            robot.vel_omni = np.zeros((2, 1))
-                        if hasattr(robot, 'vel_diff'):
-                            robot.vel_diff = np.zeros((2, 1))
-                    except Exception:
-                        pass
-                    print(f"PAR POSITION SET: Agent {aid} position set to {proposed}")
-                # Clear after applying
-                self._par_last_set_positions.clear()
-        except Exception:
-            pass
-
-        # DEBUG: Check PAR positions before _step_pure_rl
-        par_positions_before = {}
-        for aid in range(len(self.robot_list)):
-            if self.get_current_mode(aid) == 'par':
                 try:
-                    pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
-                    par_positions_before[aid] = pos
-                    print(f"PAR DEBUG BEFORE: Agent {aid} position before _step_pure_rl: {pos}")
+                    import numpy as _np
+                    vec = _np.asarray(act, dtype=float)
+                    if vec.size >= 2:
+                        vx, vy = float(vec[0]), float(vec[1])
+                        speed = (vx * vx + vy * vy) ** 0.5
+                        if speed > par_speed_cap and speed > 1e-8:
+                            scale = par_speed_cap / speed
+                            vx *= scale
+                            vy *= scale
+                            modified_action_list[aid2] = _np.array([vx, vy], dtype=float)
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        # DEBUG: PAR positions before _step_pure_rl removed (RL-only execution)
 
         # Now run dynamics with possibly adjusted actions
         obs_list, reward_list, done_list, info_list = self._step_pure_rl(modified_action_list)
 
-        # DEBUG: Check PAR positions after _step_pure_rl
-        for aid in par_positions_before:
-            try:
-                pos = (float(self.robot_list[aid].state[0, 0]), float(self.robot_list[aid].state[1, 0]))
-                if pos != par_positions_before[aid]:
-                    print(f"PAR DEBUG AFTER: Agent {aid} position CHANGED after _step_pure_rl: {par_positions_before[aid]} -> {pos}")
-                else:
-                    print(f"PAR DEBUG AFTER: Agent {aid} position unchanged after _step_pure_rl: {pos}")
-            except Exception:
-                pass
+        # DEBUG: PAR positions after _step_pure_rl removed (RL-only execution)
 
         # Ensure info_list carries 'done' based on waypoint final flags (align success criteria)
         try:
@@ -1199,6 +896,44 @@ class ir_gym(env_base):
                     else:
                         info['current_goal'] = current_goals[i] if i < len(current_goals) else [0.0, 0.0]
                         info['done'] = bool(final_flags[i]) if i < len(final_flags) else False
+        except Exception:
+            pass
+
+        # If all current PAR agents have completed their waypoint managers, switch them back to RL mode and restore LR managers
+        try:
+            current_par_agents = []
+            for aid2 in range(len(self.robot_list)):
+                mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                if mode2 == 'par':
+                    current_par_agents.append(aid2)
+            if len(current_par_agents) > 0 and isinstance(self._waypoint_managers, dict):
+                all_complete = True
+                for aid2 in current_par_agents:
+                    if aid2 not in self._waypoint_managers:
+                        all_complete = False
+                        break
+                    cur_goal2 = self._waypoint_managers[aid2].get_current_goal()
+                    if cur_goal2 is not None:
+                        all_complete = False
+                        break
+                if all_complete:
+                    for pid in current_par_agents:
+                        old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'par'
+                        self.state_manager.set_rl_rvo_mode(pid)
+                        # Restore original LR waypoint manager if saved
+                        try:
+                            if hasattr(self, '_saved_lr_managers') and pid in self._saved_lr_managers:
+                                self._waypoint_managers[pid] = self._saved_lr_managers[pid]
+                                del self._saved_lr_managers[pid]
+                                # Update robot.goal to restored manager current goal
+                                cur_goal_restored = self._waypoint_managers[pid].get_current_goal()
+                                if cur_goal_restored is not None:
+                                    import numpy as np
+                                    self.robot_list[pid].goal = np.array([[float(cur_goal_restored[0])], [float(cur_goal_restored[1])]])
+                        except Exception:
+                            pass
+                        if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                            self.deadlock_logger.log_mode_switch(pid, old_mode, 'rl_rvo', 'PAR participants completed (manager-final)')
         except Exception:
             pass
 
@@ -1307,51 +1042,67 @@ class ir_gym(env_base):
     # --- Long-range helper: build occupancy grid consistent with PAR workspace ---
     def _build_occupancy_grid_for_long_range(self):
         try:
-            # Prefer map_matrix if available (same source used by PAR environment)
+            # Read grid_resolution from config (same as PAR)
+            try:
+                if isinstance(self.long_range_config, dict):
+                    resolution = float(self.long_range_config.get('grid_resolution', 0.5))
+                else:
+                    resolution = float(getattr(self.long_range_config, 'grid_resolution', 0.5))
+                print(f"LONG-RANGE GRID: Read grid_resolution={resolution} from config")
+            except Exception as e:
+                resolution = 0.5
+                print(f"LONG-RANGE GRID: Failed to read grid_resolution, using default={resolution}, error={e}")
+            
+            # Get world bounds (same as PAR workspace bounds)
+            world_w = float(getattr(self, '_env_base__width', 10))
+            world_h = float(getattr(self, '_env_base__height', 10))
+            offset_x = float(getattr(self, 'offset_x', 0.0))
+            offset_y = float(getattr(self, 'offset_y', 0.0))
+            
+            # Check for map_matrix (same as PAR)
             map_matrix = None
-            # Default resolution from long-range config
-            resolution = float(getattr(self.long_range_config, 'grid_resolution', 0.5))
             if hasattr(self, 'components') and isinstance(self.components, dict):
                 map_matrix = self.components.get('map_matrix', None)
             
-            # If we have a pre-rasterized map_matrix, use it directly
+            # If we have map_matrix, use it directly (same as PAR)
             if map_matrix is not None:
-                # If a rasterized map exists, align planner resolution with map's xy_reso
-                try:
-                    if 'xy_reso' in self.components and self.components['xy_reso'] is not None:
-                        resolution = float(self.components['xy_reso'])
-                except Exception:
-                    pass
-                # Ensure binarized grid (0 free, 1 obstacle)
                 import numpy as _np
                 arr = _np.array(map_matrix)
                 bin_grid = (arr != 0).astype(int).tolist()
-                # Get world dimensions for logging
-                world_w = int(getattr(self, '_env_base__width', 10))
-                world_h = int(getattr(self, '_env_base__height', 10))
-                return bin_grid, resolution, world_w, world_h
+                print(f"LONG-RANGE GRID MAP: Using map_matrix with user-configured resolution={resolution}")
+                return bin_grid, resolution, int(world_w), int(world_h)
             
-            # Fallback: build grid with obstacles like PAR does
-            world_w = int(getattr(self, '_env_base__width', 10))
-            world_h = int(getattr(self, '_env_base__height', 10))
-            cols = max(1, int(round(world_w / resolution)))
-            rows = max(1, int(round(world_h / resolution)))
-            grid = [[0 for _ in range(cols)] for __ in range(rows)]
+            # Build grid from workspace bounds (exactly like PAR)
+            import math as _math
+            bx0, by0 = offset_x, offset_y
+            bx1, by1 = offset_x + world_w, offset_y + world_h
+            res = resolution
             
-            # Add obstacles using the same method as PAR
+            # Calculate grid dimensions (same as PAR)
+            full_w = max(1, int(_math.floor((bx1 - bx0) / res)))
+            full_h = max(1, int(_math.floor((by1 - by0) / res)))
+            print(f"LONG-RANGE GRID: World bounds: ({bx0}, {by0}) to ({bx1}, {by1})")
+            print(f"LONG-RANGE GRID: Grid dimensions: {full_w} x {full_h}")
+            
+            # Initialize grid (same as PAR)
+            grid = [[0 for _ in range(full_w)] for _ in range(full_h)]
+            
+            # Set up coordinate system (same as PAR)
+            min_x, min_y = bx0, by0
+            max_x, max_y = bx1, by1
+            
+            # Get obstacles (same as PAR)
             obstacles = self._get_environment_obstacles_for_long_range()
             print(f"LONG-RANGE: Found {len(obstacles)} obstacles")
+            
+            # Rasterize obstacles using exact PAR algorithm
             if obstacles:
-                self._populate_obstacles_in_grid(grid, obstacles, resolution, world_w, world_h)
+                self._populate_obstacles_in_grid_par_style(grid, obstacles, res, min_x, min_y, full_w, full_h)
                 print(f"LONG-RANGE: Populated {len(obstacles)} obstacles into grid")
             else:
                 print(f"LONG-RANGE: No obstacles found to populate")
             
-            # Add map boundaries as obstacles to prevent path planning outside the map
-            # Now using dynamic boundary checking instead of pre-marking
-            self._add_map_boundaries_as_obstacles(grid, world_w, world_h, resolution)
-            
-            return grid, resolution, world_w, world_h
+            return grid, resolution, int(world_w), int(world_h)
         except Exception as e:
             print(f"LONG-RANGE GRID ERROR: {e}")
             return None, None
@@ -1387,6 +1138,162 @@ class ir_gym(env_base):
             print(f"LONG-RANGE OBSTACLE ERROR: {e}")
             return []
     
+    def _populate_obstacles_in_grid_par_style(self, grid, obstacles, resolution, min_x, min_y, grid_width, grid_height):
+        """Populate obstacles in grid using exact PAR algorithm."""
+        for obstacle in obstacles:
+            self._add_obstacle_to_grid_par_style(grid, obstacle, resolution, min_x, min_y, grid_width, grid_height)
+    
+    def _add_obstacle_to_grid_par_style(self, grid, obstacle, resolution, min_x, min_y, grid_width, grid_height):
+        """Add a single obstacle to the grid using exact PAR algorithm."""
+        try:
+            if hasattr(obstacle, 'pos') and hasattr(obstacle, 'radius'):
+                # Circular obstacle (same as PAR)
+                center_x, center_y = obstacle.pos[0], obstacle.pos[1]
+                radius = obstacle.radius
+                self._add_circular_obstacle_par_style(grid, center_x, center_y, radius, resolution, min_x, min_y, grid_width, grid_height)
+                
+            elif hasattr(obstacle, 'vertices'):
+                # Polygon obstacle (same as PAR)
+                vertices = obstacle.vertices
+                self._add_polygon_obstacle_par_style(grid, vertices, resolution, min_x, min_y, grid_width, grid_height)
+            elif hasattr(obstacle, 'vertexes'):
+                # Polygon obstacle (ir_sim obs_polygon uses 'vertexes' 2xN) (same as PAR)
+                try:
+                    verts = obstacle.vertexes
+                    # Expect ndarray shape (2, N)
+                    if hasattr(verts, 'shape') and len(verts.shape) == 2 and verts.shape[0] == 2:
+                        vertices = [(float(verts[0, i]), float(verts[1, i])) for i in range(verts.shape[1])]
+                    else:
+                        # Fallback: attempt to iterate columns
+                        vertices = [(float(v[0]), float(v[1])) for v in getattr(obstacle, 'vertexes')]
+                    self._add_polygon_obstacle_par_style(grid, vertices, resolution, min_x, min_y, grid_width, grid_height)
+                except Exception:
+                    pass
+                
+            elif isinstance(obstacle, (list, tuple)) and len(obstacle) >= 2:
+                # Point obstacle (same as PAR)
+                x, y = obstacle[0], obstacle[1]
+                self._add_point_obstacle_par_style(grid, x, y, resolution, min_x, min_y, grid_width, grid_height)
+                
+        except Exception as e:
+            pass
+    
+    def _add_circular_obstacle_par_style(self, grid, center_x, center_y, radius, resolution, min_x, min_y, grid_width, grid_height):
+        """Add a circular obstacle to the grid (exact PAR algorithm)."""
+        # Convert to grid coordinates (same as PAR)
+        grid_center_x = int((center_x - min_x) / resolution)
+        grid_center_y = int((center_y - min_y) / resolution)
+        grid_radius = int(radius / resolution) + 1
+        
+        # Mark grid cells within the circle as obstacles (same as PAR)
+        for i in range(max(0, grid_center_y - grid_radius), min(grid_height, grid_center_y + grid_radius + 1)):
+            for j in range(max(0, grid_center_x - grid_radius), min(grid_width, grid_center_x + grid_radius + 1)):
+                # Check if cell is within circle (same as PAR)
+                if (i - grid_center_y) ** 2 + (j - grid_center_x) ** 2 <= grid_radius ** 2:
+                    if 0 <= i < grid_height and 0 <= j < grid_width:
+                        grid[i][j] = 1  # Mark as obstacle
+    
+    def _add_polygon_obstacle_par_style(self, grid, vertices, resolution, min_x, min_y, grid_width, grid_height):
+        """Add a polygon obstacle to the grid using exact PAR algorithm."""
+        if len(vertices) < 3:
+            return
+        
+        # Use grid cell overlap method (same as PAR)
+        self._fill_polygon_grid_cell_overlap_par_style(grid, vertices, resolution, min_x, min_y, grid_width, grid_height)
+    
+    def _add_point_obstacle_par_style(self, grid, x, y, resolution, min_x, min_y, grid_width, grid_height):
+        """Add a point obstacle to the grid (exact PAR algorithm)."""
+        grid_x = int((x - min_x) / resolution)
+        grid_y = int((y - min_y) / resolution)
+        
+        if 0 <= grid_y < grid_height and 0 <= grid_x < grid_width:
+            grid[grid_y][grid_x] = 1  # Mark as obstacle
+    
+    def _fill_polygon_grid_cell_overlap_par_style(self, grid, vertices, resolution, min_x, min_y, grid_width, grid_height):
+        """Fill polygon area using exact PAR grid cell overlap method."""
+        # Calculate polygon bounding box in continuous coordinates (same as PAR)
+        min_poly_x = min(v[0] for v in vertices)
+        max_poly_x = max(v[0] for v in vertices)
+        min_poly_y = min(v[1] for v in vertices)
+        max_poly_y = max(v[1] for v in vertices)
+        
+        # Calculate grid cell range that might overlap with polygon (same as PAR)
+        grid_min_x = max(0, int((min_poly_x - min_x) / resolution))
+        grid_max_x = min(grid_width, int((max_poly_x - min_x) / resolution) + 1)
+        grid_min_y = max(0, int((min_poly_y - min_y) / resolution))
+        grid_max_y = min(grid_height, int((max_poly_y - min_y) / resolution) + 1)
+        
+        filled_count = 0
+        for i in range(grid_min_y, grid_max_y):
+            for j in range(grid_min_x, grid_max_x):
+                # Calculate grid cell corners in continuous coordinates (same as PAR)
+                cell_x = min_x + j * resolution
+                cell_y = min_y + i * resolution
+                cell_corners = [
+                    (cell_x, cell_y),                           # bottom-left
+                    (cell_x + resolution, cell_y),              # bottom-right
+                    (cell_x, cell_y + resolution),              # top-left
+                    (cell_x + resolution, cell_y + resolution)  # top-right
+                ]
+                
+                # Check if grid cell overlaps with polygon (same as PAR)
+                if self._grid_cell_overlaps_polygon_par_style(cell_corners, vertices):
+                    grid[i][j] = 1  # Mark as obstacle
+                    filled_count += 1
+    
+    def _grid_cell_overlaps_polygon_par_style(self, cell_corners, vertices):
+        """Check if a grid cell overlaps with polygon (exact PAR algorithm)."""
+        # Check if any corner is inside the polygon (same as PAR)
+        corners_inside = 0
+        corners_on_boundary = 0
+        
+        for corner in cell_corners:
+            inside, on_boundary = self._point_in_polygon_with_boundary_par_style(corner[0], corner[1], vertices)
+            if inside and not on_boundary:
+                corners_inside += 1
+            elif on_boundary:
+                corners_on_boundary += 1
+        
+        # If any corner is inside (not on boundary), the cell overlaps (same as PAR)
+        if corners_inside > 0:
+            return True
+        
+        # If all corners are on boundary, the cell doesn't overlap (same as PAR)
+        if corners_inside == 0 and corners_on_boundary == 4:
+            return False
+        
+        # Only mark as obstacle if there are corners inside the polygon (same as PAR)
+        return corners_inside > 0
+    
+    def _point_in_polygon_with_boundary_par_style(self, x, y, vertices):
+        """Check if a point is inside a polygon, with boundary detection (exact PAR algorithm)."""
+        n = len(vertices)
+        inside = False
+        on_boundary = False
+        
+        # Check if point is exactly on a vertex (same as PAR)
+        for vx, vy in vertices:
+            if abs(x - vx) < 1e-10 and abs(y - vy) < 1e-10:
+                return True, True
+        
+        # Ray casting algorithm with boundary detection (same as PAR)
+        for i in range(n):
+            j = (i + 1) % n
+            xi, yi = vertices[i]
+            xj, yj = vertices[j]
+            
+            # Check if point is on the edge
+            if min(xi, xj) <= x <= max(xi, xj) and min(yi, yj) <= y <= max(yi, yj):
+                # Check if point is on the line
+                if abs((y - yi) * (xj - xi) - (x - xi) * (yj - yi)) < 1e-10:
+                    on_boundary = True
+            
+            # Ray casting
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+        
+        return inside, on_boundary
+
     def _populate_obstacles_in_grid(self, grid, obstacles, resolution, world_width, world_height):
         """Populate the grid with obstacles using the same method as PAR."""
         try:
@@ -1637,10 +1544,7 @@ class ir_gym(env_base):
                     if hasattr(self.par_executor, 'agent_substep_index') and agent_id in self.par_executor.agent_substep_index:
                         del self.par_executor.agent_substep_index[agent_id]
                 
-                # Clear any queued PAR positions
-                if hasattr(self, '_par_last_set_positions') and self._par_last_set_positions:
-                    if agent_id in self._par_last_set_positions:
-                        del self._par_last_set_positions[agent_id]
+                # Legacy set_position queue no longer used
                         
         except Exception as e:
             print(f"Error forcing PAR agent {agent_id} exit: {e}")

@@ -34,7 +34,16 @@ class PAREnvironment:
         self.participants = participants
         self.config = config
         self.par_offset = config.get('PAR_OFFSET', 2)
-        self.grid_resolution = config.get('GRID_RESOLUTION', 0.5)
+        # Prefer explicit GRID_RESOLUTION; fallback to workspace's grid_resolution; then default
+        try:
+            ws_res = None
+            if hasattr(workspace, 'get') and callable(workspace.get):
+                ws_res = workspace.get('grid_resolution', None)
+            self.grid_resolution = float(config.get('GRID_RESOLUTION', ws_res if ws_res is not None else 0.5))
+        except Exception:
+            self.grid_resolution = 0.5
+        # Whether to ignore xy_reso/map_matrix and always use grid_resolution for PAR
+        self.ignore_xy_reso = bool(config.get('PAR_IGNORE_XY_RESO', True)) if isinstance(config, dict) else True
         
         # Environment boundaries
         self.min_x = float('inf')
@@ -63,12 +72,11 @@ class PAREnvironment:
                 self._ws_offset_y = float(self.workspace.get('offset_y', 0.0))
         except Exception:
             pass
-        # Ensure grid_resolution equals xy_reso when map_matrix exists
-        if self._ws_map_matrix is not None and self._ws_xy_reso is not None:
-            try:
-                self.grid_resolution = float(self._ws_xy_reso)
-            except Exception:
-                pass
+        # Optionally ignore xy_reso/map_matrix to unify on grid_resolution
+        if self.ignore_xy_reso:
+            self._ws_xy_reso = None
+            # Do not rely on map_matrix raster for resolution either
+            # Keep _ws_map_matrix present only for obstacle occupancy if needed elsewhere
 
     def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
         """Convert continuous world coordinates to global grid column/row indices.
