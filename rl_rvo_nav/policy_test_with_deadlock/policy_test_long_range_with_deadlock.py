@@ -25,12 +25,12 @@ parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
 parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')
 parser.add_argument('--arg_name', default='pre_train')
-# parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_100.pt')
+# parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_1000.pt')
 # parser.add_argument('--arg_name', default='pre_train_obs_10_1/pre_train_obs_10_1')
 parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--robot_number', type=int, default='8')
 parser.add_argument('--num_episodes', type=int, default='1')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
@@ -43,7 +43,7 @@ parser.add_argument('--once', action='store_true')
 parser.add_argument('--long_range', action='store_true', default=True)
 parser.add_argument('--grid_resolution', type=float, default=0.5)
 parser.add_argument('--waypoint_spacing', type=float, default=2.0)
-parser.add_argument('--reach_threshold', type=float, default=0.2)
+parser.add_argument('--reach_threshold', type=float, default=0.3)
 parser.add_argument('--waypoint_separation_manhattan', type=float, default=2.0) # for separate waypoints when generating waypoints for multiple agents
 
 # Deadlock resolution
@@ -99,7 +99,7 @@ pt = post_train_with_deadlock(
     render=policy_args.render,
     std_factor=0.001,
     acceler_vel=1.0,
-    max_ep_len=300,
+    max_ep_len=500,
     neighbors_region=args.neighbors_region,
     neighbor_num=args.neighbors_num,
     args=args,

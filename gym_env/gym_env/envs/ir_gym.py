@@ -1070,6 +1070,21 @@ class ir_gym(env_base):
                 arr = _np.array(map_matrix)
                 bin_grid = (arr != 0).astype(int).tolist()
                 print(f"LONG-RANGE GRID MAP: Using map_matrix with user-configured resolution={resolution}")
+                # Optional: inflate obstacles by dilation (post-raster step)
+                try:
+                    enable_dilate = True
+                    dilate_iters = 1
+                    if isinstance(self.long_range_config, dict):
+                        enable_dilate = bool(self.long_range_config.get('enable_obstacle_dilation', True))
+                        dilate_iters = int(self.long_range_config.get('obstacle_dilation_cells', 1))
+                    else:
+                        enable_dilate = bool(getattr(self.long_range_config, 'enable_obstacle_dilation', True))
+                        dilate_iters = int(getattr(self.long_range_config, 'obstacle_dilation_cells', 1))
+                    if enable_dilate and dilate_iters > 0:
+                        bin_grid = self._dilate_obstacle_grid(bin_grid, dilate_iters)
+                        print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on map_matrix grid")
+                except Exception:
+                    pass
                 return bin_grid, resolution, int(world_w), int(world_h)
             
             # Build grid from workspace bounds (exactly like PAR)
@@ -1102,10 +1117,57 @@ class ir_gym(env_base):
             else:
                 print(f"LONG-RANGE: No obstacles found to populate")
             
+            # Optional: inflate obstacles by dilation (post-raster step)
+            try:
+                enable_dilate = True
+                dilate_iters = 1
+                if isinstance(self.long_range_config, dict):
+                    enable_dilate = bool(self.long_range_config.get('enable_obstacle_dilation', True))
+                    dilate_iters = int(self.long_range_config.get('obstacle_dilation_cells', 1))
+                else:
+                    enable_dilate = bool(getattr(self.long_range_config, 'enable_obstacle_dilation', True))
+                    dilate_iters = int(getattr(self.long_range_config, 'obstacle_dilation_cells', 1))
+                if enable_dilate and dilate_iters > 0:
+                    grid = self._dilate_obstacle_grid(grid, dilate_iters)
+                    print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on analytic grid")
+            except Exception:
+                pass
+
             return grid, resolution, int(world_w), int(world_h)
         except Exception as e:
             print(f"LONG-RANGE GRID ERROR: {e}")
             return None, None
+
+    def _dilate_obstacle_grid(self, grid, iterations=1):
+        """Apply 8-neighborhood binary dilation to obstacle grid for N iterations.
+        1-marked cells are obstacles. Returns a new grid (same shape).
+        """
+        try:
+            if grid is None or iterations <= 0:
+                return grid
+            h = len(grid)
+            w = len(grid[0]) if h > 0 else 0
+            if h == 0 or w == 0:
+                return grid
+            import copy as _copy
+            cur = [row[:] for row in grid]
+            nbrs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,0),(0,1),(1,-1),(1,0),(1,1)]
+            for _ in range(int(iterations)):
+                nxt = [row[:] for row in cur]
+                for i in range(h):
+                    rowi = cur[i]
+                    for j in range(w):
+                        if rowi[j] == 1:
+                            # mark neighbors as obstacle
+                            for di,dj in nbrs:
+                                ni = i + di
+                                nj = j + dj
+                                if 0 <= ni < h and 0 <= nj < w:
+                                    nxt[ni][nj] = 1
+                cur = nxt
+            return cur
+        except Exception:
+            return grid
 
     def _get_environment_obstacles_for_long_range(self):
         """Get obstacles from the environment using the same method as PAR."""

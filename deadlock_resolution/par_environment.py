@@ -415,6 +415,16 @@ class PAREnvironment:
             if map_matrix is None and use_analytic and isinstance(obstacles, (list, tuple)) and len(obstacles) > 0:
                 for obstacle in obstacles:
                     self._add_obstacle_to_grid(sub_map, obstacle)
+                # Optional: inflate obstacles by dilation (post-raster step)
+                try:
+                    enable_dilate = bool(self.config.get('ENABLE_OBSTACLE_DILATION', True)) if isinstance(self.config, dict) else True
+                    dilate_iters = int(self.config.get('OBSTACLE_DILATION_CELLS', 1)) if isinstance(self.config, dict) else 1
+                    if enable_dilate and dilate_iters > 0:
+                        self._dilate_obstacle_grid_inplace(sub_map, dilate_iters)
+                        if debug_mode:
+                            print(f"PAR: Applied obstacle dilation (iters={dilate_iters}) on analytic grid")
+                except Exception:
+                    pass
             else:
                 # No raster map available; analytic obstacles already processed above
                 # Debug summary after population
@@ -439,6 +449,34 @@ class PAREnvironment:
         except Exception as e:
             # print(f"⚠️ Warning: Could not populate obstacles: {e}")
             # Continue with free space if obstacle processing fails
+            pass
+
+    def _dilate_obstacle_grid_inplace(self, sub_map: SubMap, iterations: int = 1):
+        """Apply 8-neighborhood dilation to SubMap grid in-place for N iterations."""
+        try:
+            if sub_map is None or iterations <= 0:
+                return
+            h = getattr(sub_map, 'height', 0)
+            w = getattr(sub_map, 'width', 0)
+            if h == 0 or w == 0 or not hasattr(sub_map, 'grid'):
+                return
+            nbrs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,0),(0,1),(1,-1),(1,0),(1,1)]
+            # Work on python list grid
+            cur = [row[:] for row in sub_map.grid]
+            for _ in range(int(iterations)):
+                nxt = [row[:] for row in cur]
+                for i in range(h):
+                    rowi = cur[i]
+                    for j in range(w):
+                        if rowi[j]:
+                            for di, dj in nbrs:
+                                ni = i + di
+                                nj = j + dj
+                                if 0 <= ni < h and 0 <= nj < w:
+                                    nxt[ni][nj] = 1
+                cur = nxt
+            sub_map.grid = cur
+        except Exception:
             pass
     
     def _add_obstacle_to_grid(self, sub_map: SubMap, obstacle):

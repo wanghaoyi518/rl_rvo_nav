@@ -29,7 +29,7 @@ parser.add_argument('--model_path', default='policy_train/model_save')
 # Stage 4 最佳模型
 # parser.add_argument('--model_name', default='r4_mode7_stage4_10_2/r4_mode7_stage4_10_2_900.pt')  #   policy_dict=True    
 # parser.add_argument('--arg_name', default='r4_mode7_stage4_10_2/r4_mode7_stage4_10_2')
-parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_100.pt')  #   policy_dict=True    
+parser.add_argument('--model_name', default='pre_train_obs_10_1/pre_train_obs_10_1_check_point_1000.pt')  #   policy_dict=True    
 parser.add_argument('--arg_name', default='pre_train_obs_10_1/pre_train_obs_10_1')
 # Stage 4 配置文件
 parser.add_argument('--world_name', default='mode7_stage4_complex+.yaml')  # Stage 4配置文件
