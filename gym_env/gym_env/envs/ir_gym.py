@@ -162,6 +162,14 @@ class ir_gym(env_base):
                             reached_flags[aid] = bool(reached)
                             final_flags[aid] = bool(final_reached)
                             cur_goal = self._waypoint_managers[aid].get_current_goal()
+                            # Report current waypoint index to deadlock detector for waypoint-stuck trigger
+                            try:
+                                if mode == 'rl_rvo' and hasattr(self, 'deadlock_detector') and self.deadlock_detector:
+                                    wp_idx = int(getattr(self._waypoint_managers[aid], '_index', 0))
+                                    if hasattr(self.deadlock_detector, 'update_waypoint_history'):
+                                        self.deadlock_detector.update_waypoint_history(aid, wp_idx)
+                            except Exception:
+                                pass
                             if cur_goal is not None:
                                 try:
                                     import numpy as np
@@ -787,6 +795,14 @@ class ir_gym(env_base):
                         # Progress waypoint once before observation/reward
                         reached, final_reached = self._waypoint_managers[aid].update(pos)
                         cur_goal = self._waypoint_managers[aid].get_current_goal()
+                        # Report current waypoint index to deadlock detector for waypoint-stuck trigger
+                        try:
+                            if mode == 'rl_rvo' and hasattr(self, 'deadlock_detector') and self.deadlock_detector:
+                                wp_idx = int(getattr(self._waypoint_managers[aid], '_index', 0))
+                                if hasattr(self.deadlock_detector, 'update_waypoint_history'):
+                                    self.deadlock_detector.update_waypoint_history(aid, wp_idx)
+                        except Exception:
+                            pass
                         if cur_goal is not None:
                             try:
                                 import numpy as np

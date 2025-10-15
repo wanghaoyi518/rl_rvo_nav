@@ -93,6 +93,13 @@ class DeadlockDetector:
         self._group_cache: Dict[int, List[int]] = {}
         # Global velocity history update guard per step
         self._velhist_step = -1
+
+        # Waypoint-stuck trigger (long-range): optional independent trigger
+        self.enable_wp_stuck = bool(config.get('ENABLE_WAYPOINT_STUCK_TRIGGER', True))
+        self.wp_stuck_steps = int(config.get('WAYPOINT_STUCK_STEPS', 100))
+        # Track each agent's last observed waypoint index and when it last changed
+        self._last_wp_index: Dict[int, int] = {}
+        self._last_wp_change_step: Dict[int, int] = {}
         
         # Initialize logger
         try:
@@ -174,26 +181,85 @@ class DeadlockDetector:
             return self._unified_detect_deadlock(agent_id, agent_states)
         
         if self.trigger_type == 'SPEED_BUFFER':
-            result = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+            result_speed = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
         else:
             # Default to speed buffer trigger
-            result = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+            result_speed = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
+
+        # Independent waypoint-stuck trigger (does not modify speed buffer logic)
+        result_wp = self.check_waypoint_stuck_trigger(agent_id, agent_states)
+        result = bool(result_speed or result_wp)
         
         # Log detection result and update cooldown
         if result:
             # Update cooldown time for this agent
             self.last_deadlock_detection[agent_id] = self.step_counter
             if self.logger:
-                self.logger.log_deadlock_detection(agent_id, self.trigger_type, {
+                meta = {
                     'agent_states': {k: v for k, v in agent_states.items() if k == agent_id},
                     'neighbor_count': len(neighbor_states),
                     'trigger_type': self.trigger_type
-                })
+                }
+                # Annotate source if waypoint-stuck triggered
+                if result_wp and not result_speed:
+                    meta['trigger_source'] = 'WAYPOINT_STUCK'
+                elif result_speed and not result_wp:
+                    meta['trigger_source'] = 'SPEED_BUFFER'
+                else:
+                    meta['trigger_source'] = 'COMBINED'
+                try:
+                    self.logger.log_deadlock_detection(agent_id, self.trigger_type, meta)
+                except Exception:
+                    pass
         else:
             if self.logger:
                 self.logger.logger.debug(f"✅ NO DEADLOCK: Agent {agent_id}")
         
         return result
+
+    def update_waypoint_history(self, agent_id: int, waypoint_index: int) -> None:
+        """Update waypoint index history for an agent.
+        Call this once per step (only in long-range rl_rvo mode).
+        """
+        try:
+            prev = self._last_wp_index.get(agent_id)
+            if prev is None or int(prev) != int(waypoint_index):
+                self._last_wp_index[agent_id] = int(waypoint_index)
+                self._last_wp_change_step[agent_id] = int(self.step_counter)
+            elif agent_id not in self._last_wp_change_step:
+                # Initialize change step if absent
+                self._last_wp_change_step[agent_id] = int(self.step_counter)
+        except Exception:
+            pass
+
+    def check_waypoint_stuck_trigger(self, agent_id: int, agent_states: Dict) -> bool:
+        """Independent trigger: agent stuck on the same waypoint index for too long.
+        Only effective if environment reports waypoint indices each step.
+        """
+        try:
+            if not self.enable_wp_stuck:
+                return False
+            # If no history for this agent, cannot trigger
+            if agent_id not in self._last_wp_change_step:
+                return False
+            # Do not trigger if agent is effectively at goal
+            if agent_id in agent_states:
+                dist = self.calculate_distance_to_goal(agent_states[agent_id])
+                if dist <= float(self.goal_tolerance):
+                    return False
+            # Check duration since last waypoint change
+            last_change = self._last_wp_change_step.get(agent_id, self.step_counter)
+            if (self.step_counter - last_change) >= int(self.wp_stuck_steps):
+                if self.logger:
+                    try:
+                        self.logger.logger.debug(
+                            f"🔍 WAYPOINT-STUCK TRIGGER: Agent {agent_id} stuck_steps={self.step_counter - last_change} >= {self.wp_stuck_steps}")
+                    except Exception:
+                        pass
+                return True
+        except Exception:
+            return False
+        return False
     
     def check_speed_buffer_trigger(self, agent_id: int, agent_states: Dict, neighbor_states: Dict) -> bool:
         """
@@ -526,6 +592,9 @@ class DeadlockDetector:
         self.last_deadlock_detection.clear()  # Reset cooldown state for new episode
         self.episode_counter += 1
         self.step_counter = 0  # Reset step counter for new episode
+        # Reset waypoint-stuck histories
+        self._last_wp_index.clear()
+        self._last_wp_change_step.clear()
         if self.logger:
             # self.logger.logger.info(f"🔄 Episode {self.episode_counter}: Reset velocity history and step counter for deadlock detection")
             pass
