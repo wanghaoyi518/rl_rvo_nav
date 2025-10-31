@@ -75,24 +75,25 @@ class DeadlockDetector:
         self.participant_lock_steps = config.get('PARTICIPANT_LOCK_STEPS', 0)
         self.locked_participants: Dict[int, Tuple[List[int], int]] = {}
         
-        # Unified detection parameters
-        self.risk_ttc_threshold = config.get('RISK_TTC_THRESHOLD', 1.0)
-        self.risk_dmin_threshold = config.get('RISK_DMIN_THRESHOLD', 0.6)
-        self.risk_weights = config.get('RISK_WEIGHTS', {'ttc': 1.0, 'dmin': 0.5})
-        self.core_pair_only = config.get('CORE_PAIR_ONLY', True)
-        self.consensus_jaccard_threshold = config.get('CONSENSUS_JACCARD_THRESHOLD', 0.5)
-        self.max_core_pairs_per_step = config.get('MAX_CORE_PAIRS_PER_STEP', 1)
-        
         # Goal tolerance for arrival check
         self.goal_tolerance = config.get('GOAL_TOLERANCE', 0.1)
         
-        # Step-cache for per-step computations
-        self._cache_step = -1
-        self._metrics_cache: Dict[Tuple[int, int], Dict[str, float]] = {}
-        self._best_partner_cache: Dict[int, Tuple[int, float]] = {}
-        self._group_cache: Dict[int, List[int]] = {}
         # Global velocity history update guard per step
         self._velhist_step = -1
+
+        # Risk gating thresholds for SPEED_BUFFER (fallback defaults if absent in config)
+        try:
+            self.ttc_threshold = float(config.get('TTC_THRESHOLD', 2.0))
+        except Exception:
+            self.ttc_threshold = 2.0
+        try:
+            self.dmin_threshold = float(config.get('DMIN_THRESHOLD', 0.4))
+        except Exception:
+            self.dmin_threshold = 0.4
+        try:
+            self.required_non_progress_neighbors = int(config.get('REQUIRED_NON_PROGRESS_NEIGHBORS', 1))
+        except Exception:
+            self.required_non_progress_neighbors = 1
 
         # Waypoint-stuck trigger (long-range): optional independent trigger
         self.enable_wp_stuck = bool(config.get('ENABLE_WAYPOINT_STUCK_TRIGGER', True))
@@ -176,10 +177,6 @@ class DeadlockDetector:
         # Also update neighbor velocity histories from provided neighbor_states
         self._update_all_velocity_histories(agent_id, agent_states, neighbor_states)
             
-        # Unified trigger path
-        if self.trigger_type == 'UNIFIED':
-            return self._unified_detect_deadlock(agent_id, agent_states)
-        
         if self.trigger_type == 'SPEED_BUFFER':
             result_speed = self.check_speed_buffer_trigger(agent_id, agent_states, neighbor_states)
         else:
@@ -322,14 +319,26 @@ class DeadlockDetector:
 
             # Condition 2: neighbors also slow (at least one)
             cond_neighbors_slow = len(slow_neighbors) > 0 and neighbors_with_sufficient_history > 0
-            # Condition 3: at least one adjacent neighbor cannot progress toward goal
-            cond_non_progress = len(non_progress_neighbors) >= 1
+            # Condition 3: at least N adjacent neighbors cannot progress toward goal
+            cond_non_progress = len(non_progress_neighbors) >= int(self.required_non_progress_neighbors)
 
-            if cond_neighbors_slow and cond_non_progress:
+            # Condition 4: at least one non-progress neighbor presents imminent risk (ttc/dmin)
+            risk_neighbors = []
+            if len(non_progress_neighbors) > 0:
+                for nid in non_progress_neighbors:
+                    m = self._compute_pair_metrics(agent_state, agent_states.get(nid, {}))
+                    ttc = m.get('ttc', float('inf'))
+                    dmin = m.get('dmin', float('inf'))
+                    if (math.isfinite(ttc) and ttc <= float(self.ttc_threshold)) or (math.isfinite(dmin) and dmin <= float(self.dmin_threshold)):
+                        risk_neighbors.append(nid)
+            cond_risk = len(risk_neighbors) >= 1
+
+            if cond_neighbors_slow and cond_non_progress and cond_risk:
                 if self.logger:
                     self.logger.log_deadlock_check(agent_id, avg_velocity, self.small_speed, len(slow_neighbors))
                     self.logger.logger.debug(f"   Slow neighbors: {slow_neighbors}")
-                    self.logger.logger.debug(f"   Non-progress neighbors (>=2): {non_progress_neighbors}")
+                    self.logger.logger.debug(f"   Non-progress neighbors (>= {self.required_non_progress_neighbors}): {non_progress_neighbors}")
+                    self.logger.logger.debug(f"   Risk neighbors (ttc<= {self.ttc_threshold} or dmin<= {self.dmin_threshold}): {risk_neighbors}")
                 return True
             # Fallback for sparse neighborhoods: disabled per latest rule (require explicit at least 1 non-progress neighbor)
             # if cond_neighbors_slow and neighbors_with_sufficient_history < 2 and len(non_progress_neighbors) >= 1:
@@ -343,11 +352,12 @@ class DeadlockDetector:
                     self.logger.logger.debug(
                         f"🔍 SPEED BUFFER NEW RULES: agent {agent_id} avg={avg_velocity:.3f} < {self.small_speed}, "
                         f"neighbors_with_history={neighbors_with_sufficient_history}, slow_neighbors={len(slow_neighbors)}, "
-                        f"non_progress_neighbors={len(non_progress_neighbors)} -> trigger={cond_neighbors_slow and cond_non_progress}"
+                        f"non_progress_neighbors={len(non_progress_neighbors)}, risk_neighbors={len(risk_neighbors)} "
+                        f"-> trigger={cond_neighbors_slow and cond_non_progress and cond_risk}"
                     )
                 
                 # Single agent trigger as fallback: if agent is slow, not progressing, has few neighbors, and has been stuck for long time
-                if not (cond_neighbors_slow and cond_non_progress):
+                if not (cond_neighbors_slow and cond_non_progress and cond_risk):
                     single_agent_time_threshold = self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)  # Default 50 steps
                     if self.step_counter >= single_agent_time_threshold:
                         # Check if agent is not progressing toward goal
@@ -500,15 +510,43 @@ class DeadlockDetector:
         except Exception:
             pass
 
-        # Unified participant selection path
-        if self.trigger_type == 'UNIFIED':
-            participants = self._unified_get_participants(agent_id, agent_states)
+        # 基于局部冲突图选择参与者：构图→取连通分量→规模上限裁剪→失败回退配对
+        participants = [agent_id]
+        if agent_id not in agent_states:
+            return participants
+
+        # 1) 构建局部冲突图（通信半径内，双向不前进且满足TTC/DMIN风险门槛）
+        try:
+            graph = self._build_local_conflict_graph(agent_id, agent_states)
+        except Exception:
+            graph = {}
+
+        # 2) 取包含seed的连通分量
+        try:
+            component = self._extract_component(graph, agent_id)
+        except Exception:
+            component = set([agent_id])
+
+        # 3) 去除已到达目标的节点
+        filtered = []
+        for nid in component:
+            try:
+                if self.calculate_distance_to_goal(agent_states.get(nid, {})) <= float(self.goal_tolerance):
+                    continue
+            except Exception:
+                pass
+            filtered.append(nid)
+
+        # 4) 规模上限裁剪与优先级排序
+        max_participants = int(self.config.get('MAX_PAR_PARTICIPANTS', 10))
+        ordered = self._prioritize_component(filtered, agent_states) if len(filtered) > 0 else []
+        clipped = ordered[:max(2, max_participants)] if len(ordered) > 0 else []
+
+        # 5) 若裁剪后>=2，采用该集合；否则回退到“最佳邻居配对/超时最近邻”
+        if len(clipped) >= 2:
+            participants = clipped
         else:
-            # Fallback redefined: select participants using COMMUNICATION_RANGE, not upper neighbor_states
-            participants = [agent_id]
-            if agent_id not in agent_states:
-                return participants
-            # Build candidates within communication range
+            # 回退逻辑：沿用原有二人配对策略
             comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
             candidates = self._get_neighbors_in_range(agent_id, agent_states, comm_range)
             best_neighbor = None
@@ -528,63 +566,132 @@ class DeadlockDetector:
                     continue
                 if not self._is_not_progressing_toward_goal(agent_states.get(neighbor_id, {})):
                     continue
-                # Prefer the closest-in-time collision (smallest TTC) if available
+                # Prefer the closest-in-time collision (smallest TTC)
                 m = self._compute_pair_metrics(agent_states.get(agent_id, {}), agent_states.get(neighbor_id, {}))
                 ttc = m.get('ttc', float('inf'))
                 score = (1.0 / max(ttc, 1e-6)) if math.isfinite(ttc) else 0.0
                 if score > best_score:
                     best_score = score
                     best_neighbor = neighbor_id
+            participants = [agent_id]
             if best_neighbor is not None:
                 participants.append(best_neighbor)
-            participants = list(dict.fromkeys(participants))
-        
-        # Special handling for single agent fallback: if only one participant and it's a single agent trigger,
-        # force include the closest neighbor to enable PAR execution
-        if self.logger:
-            self.logger.logger.debug(f"🔍 PARTICIPANTS CHECK: Agent {agent_id}, participants={participants}, len={len(participants)}, step_counter={self.step_counter}, threshold={self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)}")
-        
-        if len(participants) == 1 and self.step_counter >= self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50):
-            # Find the closest neighbor within communication range
-            comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
-            candidates = self._get_neighbors_in_range(agent_id, agent_states, comm_range)
-            closest_neighbor = None
-            min_distance = float('inf')
-            
-            for neighbor_id in candidates:
-                if neighbor_id == agent_id:
-                    continue
-                # Skip arrived neighbors
-                try:
-                    if self.calculate_distance_to_goal(agent_states.get(neighbor_id, {})) <= float(self.goal_tolerance):
+
+            if self.logger:
+                self.logger.logger.debug(f"🔍 PARTICIPANTS CHECK: Agent {agent_id}, participants={participants}, len={len(participants)}, step_counter={self.step_counter}, threshold={self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)}")
+
+            # 单体回退：如仍仅1人且超时，强制加入通信半径内最近者
+            if len(participants) == 1 and self.step_counter >= self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50):
+                candidates = self._get_neighbors_in_range(agent_id, agent_states, comm_range)
+                closest_neighbor = None
+                min_distance = float('inf')
+                for neighbor_id in candidates:
+                    if neighbor_id == agent_id:
                         continue
-                except Exception:
-                    pass
-                
-                # Calculate distance to this neighbor
-                try:
-                    agent_pos = self.get_agent_position(agent_states.get(agent_id, {}))
-                    neighbor_pos = self.get_agent_position(agent_states.get(neighbor_id, {}))
-                    if agent_pos and neighbor_pos:
-                        distance = math.sqrt((agent_pos[0] - neighbor_pos[0])**2 + (agent_pos[1] - neighbor_pos[1])**2)
-                        if distance < min_distance:
-                            min_distance = distance
-                            closest_neighbor = neighbor_id
-                except Exception:
-                    pass
-            
-            if closest_neighbor is not None:
-                participants.append(closest_neighbor)
-                if self.logger:
-                    self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Forced inclusion of neighbor {closest_neighbor} for PAR execution")
-        
-        # Lock selected participants for a few steps to avoid oscillation
+                    try:
+                        if self.calculate_distance_to_goal(agent_states.get(neighbor_id, {})) <= float(self.goal_tolerance):
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        agent_pos = self.get_agent_position(agent_states.get(agent_id, {}))
+                        neighbor_pos = self.get_agent_position(agent_states.get(neighbor_id, {}))
+                        if agent_pos and neighbor_pos:
+                            distance = math.sqrt((agent_pos[0] - neighbor_pos[0])**2 + (agent_pos[1] - neighbor_pos[1])**2)
+                            if distance < min_distance:
+                                min_distance = distance
+                                closest_neighbor = neighbor_id
+                    except Exception:
+                        pass
+                if closest_neighbor is not None:
+                    participants.append(closest_neighbor)
+                    if self.logger:
+                        self.logger.logger.debug(f"🔍 SINGLE AGENT FALLBACK: Forced inclusion of neighbor {closest_neighbor} for PAR execution")
+
+        # 锁定若干步避免振荡
         if self.participant_lock_steps > 0 and len(participants) > 1:
             expires_at = self.step_counter + self.participant_lock_steps
             for pid in participants:
                 self.locked_participants[pid] = (participants.copy(), expires_at)
-        
-        return participants
+
+        return list(dict.fromkeys(participants))
+
+    def _build_local_conflict_graph(self, seed_id: int, agent_states: Dict) -> Dict[int, List[int]]:
+        """在通信半径内，根据双向不前进与TTC/DMIN风险门槛构建无向图。"""
+        graph: Dict[int, List[int]] = {}
+        comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
+        # 候选：seed的通信邻居 + seed 本身
+        candidates = [seed_id] + self._get_neighbors_in_range(seed_id, agent_states, comm_range)
+
+        # 仅考虑具有足够速度历史的活跃体，且未到达目标
+        min_hist = int(self.velocity_window_size * 0.8)
+        active = []
+        for nid in candidates:
+            try:
+                if self.calculate_distance_to_goal(agent_states.get(nid, {})) <= float(self.goal_tolerance):
+                    continue
+            except Exception:
+                pass
+            if nid in self.velocity_history and len(self.velocity_history[nid]) >= min_hist:
+                avg = self.calculate_average_velocity(nid)
+                if math.isfinite(avg) and avg < self.small_speed and self._is_not_progressing_toward_goal(agent_states.get(nid, {})):
+                    active.append(nid)
+        # 初始化图节点
+        for nid in active:
+            graph[nid] = []
+
+        # 加边：两两满足风险门槛（TTC或DMIN）
+        th_ttc = float(self.ttc_threshold)
+        th_dmin = float(self.dmin_threshold)
+        for i in range(len(active)):
+            a = active[i]
+            for j in range(i + 1, len(active)):
+                b = active[j]
+                m = self._compute_pair_metrics(agent_states.get(a, {}), agent_states.get(b, {}))
+                ttc = m.get('ttc', float('inf'))
+                dmin = m.get('dmin', float('inf'))
+                if (math.isfinite(ttc) and ttc <= th_ttc) or (math.isfinite(dmin) and dmin <= th_dmin):
+                    graph[a].append(b)
+                    graph[b].append(a)
+        return graph
+
+    def _extract_component(self, graph: Dict[int, List[int]], seed_id: int) -> set:
+        """提取包含seed的连通分量。若seed不在图中，返回仅含seed的集合。"""
+        if seed_id not in graph:
+            return set([seed_id])
+        seen = set()
+        stack = [seed_id]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            for nxt in graph.get(cur, []):
+                if nxt not in seen:
+                    stack.append(nxt)
+        return seen
+
+    def _prioritize_component(self, nodes: List[int], agent_states: Dict) -> List[int]:
+        """优先级排序并返回列表：seed优先、与seed的TTC小者优先、距离近者优先。"""
+        if not isinstance(nodes, list) or len(nodes) == 0:
+            return []
+        # 确保包含seed时把seed放最前
+        def seed_first(nid: int) -> int:
+            return 0 if nid == nodes[0] else 1
+        seed_id = nodes[0] if len(nodes) > 0 else None
+        # 预计算与seed的metrics
+        metrics = {}
+        for nid in nodes:
+            if seed_id is None:
+                metrics[nid] = (float('inf'), float('inf'))
+                continue
+            m = self._compute_pair_metrics(agent_states.get(seed_id, {}), agent_states.get(nid, {}))
+            ttc = m.get('ttc', float('inf'))
+            dmin = m.get('dmin', float('inf'))
+            metrics[nid] = (ttc, dmin)
+        # 排序：seed在前；ttc升序；dmin升序
+        ordered = sorted(nodes, key=lambda nid: (seed_first(nid), metrics[nid][0], metrics[nid][1]))
+        return ordered
     
     def reset_episode(self):
         """Reset velocity history for new episode."""
@@ -725,40 +832,6 @@ class DeadlockDetector:
     
     
 
-    # ---------------------- Unified detection helpers ----------------------
-    def _unified_detect_deadlock(self, agent_id: int, agent_states: Dict) -> bool:
-        """Unified deadlock trigger based on TTC/d_min risk for the given agent."""
-        if agent_id not in agent_states:
-            return False
-        self._ensure_step_cache()
-        partner_id, risk, metrics = self._get_core_pair_for_agent(agent_id, agent_states)
-        if partner_id is not None:
-            ttc = metrics.get('ttc', float('inf'))
-            dmin = metrics.get('dmin', float('inf'))
-            return (ttc < self.risk_ttc_threshold) or (dmin < self.risk_dmin_threshold)
-        # No core pair; check if there is a high-risk consensus group
-        group = self._build_consensus_group(agent_id, agent_states)
-        return len(group) > 1
-
-    def _unified_get_participants(self, agent_id: int, agent_states: Dict) -> List[int]:
-        """Return participants relying solely on unified risk logic (idempotent across calls)."""
-        self._ensure_step_cache()
-        partner_id, risk, metrics = self._get_core_pair_for_agent(agent_id, agent_states)
-        if partner_id is not None:
-            return [agent_id, partner_id]
-        group = self._build_consensus_group(agent_id, agent_states)
-        if len(group) > 1:
-            return sorted(list(group))
-        return [agent_id]
-
-    def _ensure_step_cache(self):
-        """Reset per-step caches if step counter advanced."""
-        if self._cache_step != self.step_counter:
-            self._cache_step = self.step_counter
-            self._metrics_cache.clear()
-            self._best_partner_cache.clear()
-            self._group_cache.clear()
-
     @staticmethod
     def _compute_pair_metrics(a_state: Dict, b_state: Dict) -> Dict[str, float]:
         """Compute TTC and minimum distance for two agents based on relative motion."""
@@ -794,77 +867,3 @@ class DeadlockDetector:
                 dy = ry + vy * t_star
                 dmin = math.sqrt(dx * dx + dy * dy)
         return {'ttc': ttc, 'dmin': dmin, 'closing': 1.0 if closing else 0.0}
-
-    def _get_best_partner_for(self, agent_id: int, agent_states: Dict) -> Tuple[Optional[int], float, Dict[str, float]]:
-        """Find the best risk partner for an agent across all other agents."""
-        if agent_id in self._best_partner_cache:
-            partner_id, risk = self._best_partner_cache[agent_id]
-            metrics = {}
-            if partner_id is not None:
-                key = (min(agent_id, partner_id), max(agent_id, partner_id))
-                metrics = self._metrics_cache.get(key, {})
-            return partner_id, risk, metrics
-        best_partner = None
-        best_risk = -1.0
-        best_metrics = {}
-        weights = self.risk_weights if isinstance(self.risk_weights, dict) else {'ttc': 1.0, 'dmin': 0.5}
-        for other_id, other_state in agent_states.items():
-            if other_id == agent_id:
-                continue
-            key = (min(agent_id, other_id), max(agent_id, other_id))
-            if key not in self._metrics_cache:
-                self._metrics_cache[key] = self._compute_pair_metrics(agent_states[agent_id], other_state)
-            m = self._metrics_cache[key]
-            if m.get('closing', 0.0) <= 0.0:
-                continue
-            ttc = m.get('ttc', float('inf'))
-            dmin = m.get('dmin', float('inf'))
-            inv_ttc = 0.0 if not math.isfinite(ttc) else 1.0 / max(ttc, 1e-6)
-            inv_dmin = 0.0 if not math.isfinite(dmin) else 1.0 / max(dmin, 1e-6)
-            risk = float(weights.get('ttc', 1.0)) * inv_ttc + float(weights.get('dmin', 0.5)) * inv_dmin
-            if risk > best_risk:
-                best_risk = risk
-                best_partner = other_id
-                best_metrics = m
-        self._best_partner_cache[agent_id] = (best_partner, best_risk)
-        return best_partner, best_risk, best_metrics
-
-    def _get_core_pair_for_agent(self, agent_id: int, agent_states: Dict) -> Tuple[Optional[int], float, Dict[str, float]]:
-        """Return reciprocal best partner as core pair if exists; else None."""
-        a_partner, a_risk, a_metrics = self._get_best_partner_for(agent_id, agent_states)
-        if a_partner is None:
-            return None, -1.0, {}
-        b_partner, b_risk, _ = self._get_best_partner_for(a_partner, agent_states)
-        if b_partner == agent_id:
-            return a_partner, min(a_risk, b_risk), a_metrics
-        return None, -1.0, {}
-
-    def _build_consensus_group(self, agent_id: int, agent_states: Dict) -> List[int]:
-        """Build a small consensus group around the agent using mutual-best closure."""
-        if agent_id in self._group_cache:
-            return self._group_cache[agent_id]
-        group = set([agent_id])
-        # seed with agent's best partner if above thresholds
-        partner_id, risk, metrics = self._get_core_pair_for_agent(agent_id, agent_states)
-        if partner_id is not None:
-            ttc = metrics.get('ttc', float('inf'))
-            dmin = metrics.get('dmin', float('inf'))
-            if (ttc < self.risk_ttc_threshold) or (dmin < self.risk_dmin_threshold):
-                group.add(partner_id)
-        # attempt to include high-risk neighbors whose best partner lies within current group
-        expanded = True
-        while expanded:
-            expanded = False
-            for other_id in agent_states.keys():
-                if other_id in group:
-                    continue
-                best, risk_o, metrics_o = self._get_best_partner_for(other_id, agent_states)
-                if best in group:
-                    ttc = metrics_o.get('ttc', float('inf'))
-                    dmin = metrics_o.get('dmin', float('inf'))
-                    if (ttc < self.risk_ttc_threshold) or (dmin < self.risk_dmin_threshold):
-                        group.add(other_id)
-                        expanded = True
-        result = sorted(list(group))
-        self._group_cache[agent_id] = result
-        return result

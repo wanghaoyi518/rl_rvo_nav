@@ -266,11 +266,21 @@ class ir_gym(env_base):
 
         # Check if this robot is in PAR mode (kept for potential logging), but do not skip RVO
         robot_id = self.robot_list.index(robot)
-        _ = self.get_current_mode(robot_id) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+        current_mode = self.get_current_mode(robot_id) if hasattr(self, 'get_current_mode') else 'rl_rvo'
         
         # Use combined line obstacles (lines + polygon edges) and always run RVO
         combined_lines = self._get_combined_obs_lines()
-        obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, combined_lines, action, **kwargs)
+        # Optionally exclude neighbors for PAR agents to reduce mutual suppression in RVO
+        try:
+            exclude_par_neighbors = True
+            try:
+                exclude_par_neighbors = bool(self.deadlock_config.get('EXCLUDE_PAR_NEIGHBORS_IN_RVO', True)) if self.deadlock_config else True
+            except Exception:
+                exclude_par_neighbors = True
+            nei_used = [] if (current_mode == 'par' and exclude_par_neighbors) else nei_state_list
+        except Exception:
+            nei_used = nei_state_list
+        obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_used, obs_circular_list, combined_lines, action, **kwargs)
 
         # If collision detected by RVO, call collision_check to record detailed collision information
         if collision_flag and not robot.collision_flag:
@@ -335,7 +345,19 @@ class ir_gym(env_base):
         des_vel = np.squeeze(robot.cal_des_vel_omni())
         
         combined_lines = self._get_combined_obs_lines()
-        obs_vo_list, _, min_exp_time, _ = self.rvo.config_vo_inf(robot_omni_state, nei_state_list, obs_circular_list, combined_lines)
+        # Optionally exclude neighbors for PAR agents also in observation
+        try:
+            rid = self.robot_list.index(robot)
+            mode_obs = self.get_current_mode(rid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+            exclude_par_neighbors = True
+            try:
+                exclude_par_neighbors = bool(self.deadlock_config.get('EXCLUDE_PAR_NEIGHBORS_IN_RVO', True)) if self.deadlock_config else True
+            except Exception:
+                exclude_par_neighbors = True
+            nei_used_obs = [] if (mode_obs == 'par' and exclude_par_neighbors) else nei_state_list
+        except Exception:
+            nei_used_obs = nei_state_list
+        obs_vo_list, _, min_exp_time, _ = self.rvo.config_vo_inf(robot_omni_state, nei_used_obs, obs_circular_list, combined_lines)
     
         cur_vel = np.squeeze(robot.vel_omni)
         radian = robot.state[2]
@@ -653,9 +675,7 @@ class ir_gym(env_base):
                     print(f"DEBUG: Agent {agent_id} triggered deadlock detection")
                     deadlock_participants = self.deadlock_detector.get_deadlock_participants(agent_id, agent_states, agent_neighbor_states)
                     print(f"DEBUG: Agent {agent_id} deadlock participants: {deadlock_participants}")
-                    
-                    # Participants are fully determined by detector (unified mode). Upper-layer TTC/Jaccard logic removed.
-                    
+                                        
                     # Only proceed if we have multiple confirmed participants
                     if len(deadlock_participants) > 1:
                         try:
@@ -707,6 +727,12 @@ class ir_gym(env_base):
                             for participant_id in valid_participants:
                                 old_mode = self.get_current_mode(participant_id)
                                 self.state_manager.set_par_mode(participant_id, par_solution)
+                                # Record when the agent entered PAR to support per-agent timeout
+                                try:
+                                    if hasattr(self, 'step_count') and hasattr(self.state_manager, 'set_mode_switch_time'):
+                                        self.state_manager.set_mode_switch_time(participant_id, int(self.step_count))
+                                except Exception:
+                                    pass
                                 
                                 # Build PAR waypoints and inject into WaypointManager
                                 grid_path = []
@@ -867,6 +893,90 @@ class ir_gym(env_base):
         except Exception:
             pass
 
+        # Apply yielding for non-PAR agents near PAR participants (speed scaling within radius)
+        try:
+            yielding_enabled = True
+            try:
+                yielding_enabled = bool(self.deadlock_config.get('NON_PAR_YIELDING_ENABLED', True)) if self.deadlock_config else True
+            except Exception:
+                yielding_enabled = True
+            if yielding_enabled:
+                try:
+                    import numpy as _np
+                    yield_radius = 2.0
+                    yield_scale = 0.5
+                    try:
+                        yield_radius = float(self.deadlock_config.get('NON_PAR_YIELD_RADIUS', 2.0)) if self.deadlock_config else 2.0
+                    except Exception:
+                        yield_radius = 2.0
+                    try:
+                        yield_scale = float(self.deadlock_config.get('NON_PAR_YIELD_SPEED_SCALE', 0.5)) if self.deadlock_config else 0.5
+                    except Exception:
+                        yield_scale = 0.5
+
+                    # Collect current PAR participants and their positions
+                    par_ids = []
+                    par_positions = {}
+                    for _aid in range(len(self.robot_list)):
+                        try:
+                            _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                            if _mode == 'par':
+                                par_ids.append(_aid)
+                                rbt = self.robot_list[_aid]
+                                px = float(rbt.state[0, 0]) if hasattr(rbt, 'state') else 0.0
+                                py = float(rbt.state[1, 0]) if hasattr(rbt, 'state') else 0.0
+                                par_positions[_aid] = (px, py)
+                        except Exception:
+                            pass
+
+                    if len(par_ids) > 0:
+                        for _aid in range(len(modified_action_list)):
+                            try:
+                                _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                            except Exception:
+                                _mode = 'rl_rvo'
+                            if _mode == 'par':
+                                continue
+                            act = modified_action_list[_aid]
+                            if act is None:
+                                continue
+                            try:
+                                rbt = self.robot_list[_aid]
+                                ax = float(rbt.state[0, 0]) if hasattr(rbt, 'state') else 0.0
+                                ay = float(rbt.state[1, 0]) if hasattr(rbt, 'state') else 0.0
+                            except Exception:
+                                ax, ay = 0.0, 0.0
+
+                            # Compute distance to nearest PAR participant
+                            min_dist = float('inf')
+                            for pid in par_ids:
+                                try:
+                                    px, py = par_positions.get(pid, (0.0, 0.0))
+                                    dx = ax - px
+                                    dy = ay - py
+                                    d = (dx * dx + dy * dy) ** 0.5
+                                    if d < min_dist:
+                                        min_dist = d
+                                except Exception:
+                                    pass
+                            if not _np.isfinite(min_dist) or min_dist > yield_radius:
+                                continue
+
+                            # Inside yielding radius: scale down speed
+                            try:
+                                vec = _np.asarray(act, dtype=float)
+                                if vec.size >= 2:
+                                    vx, vy = float(vec[0]), float(vec[1])
+                                    vx *= yield_scale
+                                    vy *= yield_scale
+                                    modified_action_list[_aid] = _np.array([vx, vy], dtype=float)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # DEBUG: PAR positions before _step_pure_rl removed (RL-only execution)
 
         # Now run dynamics with possibly adjusted actions
@@ -915,7 +1025,7 @@ class ir_gym(env_base):
         except Exception:
             pass
 
-        # If all current PAR agents have completed their waypoint managers, switch them back to RL mode and restore LR managers
+        # Per-agent exit from PAR: individual completion or timeout triggers immediate return to RL_RVO
         try:
             current_par_agents = []
             for aid2 in range(len(self.robot_list)):
@@ -923,17 +1033,32 @@ class ir_gym(env_base):
                 if mode2 == 'par':
                     current_par_agents.append(aid2)
             if len(current_par_agents) > 0 and isinstance(self._waypoint_managers, dict):
-                all_complete = True
-                for aid2 in current_par_agents:
-                    if aid2 not in self._waypoint_managers:
-                        all_complete = False
-                        break
-                    cur_goal2 = self._waypoint_managers[aid2].get_current_goal()
-                    if cur_goal2 is not None:
-                        all_complete = False
-                        break
-                if all_complete:
-                    for pid in current_par_agents:
+                # Read timeout config with safe defaults
+                par_timeout_steps = None
+                try:
+                    # 0 or negative disables timeout
+                    par_timeout_steps = int(self.deadlock_config.get('PAR_AGENT_MAX_STEPS', 0)) if self.deadlock_config else 0
+                except Exception:
+                    par_timeout_steps = 0
+                for pid in current_par_agents:
+                    try:
+                        # Check completion by waypoint manager
+                        completed = False
+                        if pid in self._waypoint_managers:
+                            cur_goal2 = self._waypoint_managers[pid].get_current_goal()
+                            completed = (cur_goal2 is None)
+                        # Check timeout if configured
+                        timed_out = False
+                        if par_timeout_steps and par_timeout_steps > 0 and hasattr(self.state_manager, 'get_mode_switch_time') and hasattr(self, 'step_count'):
+                            try:
+                                enter_step = int(self.state_manager.get_mode_switch_time(pid))
+                                if isinstance(enter_step, int):
+                                    timed_out = (int(self.step_count) - enter_step) >= par_timeout_steps
+                            except Exception:
+                                timed_out = False
+                        if not completed and not timed_out:
+                            continue
+                        # Perform per-agent exit
                         old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'par'
                         self.state_manager.set_rl_rvo_mode(pid)
                         # Restore original LR waypoint manager if saved
@@ -949,7 +1074,10 @@ class ir_gym(env_base):
                         except Exception:
                             pass
                         if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                            self.deadlock_logger.log_mode_switch(pid, old_mode, 'rl_rvo', 'PAR participants completed (manager-final)')
+                            reason = 'PAR manager completed' if completed else f'timeout({par_timeout_steps})'
+                            self.deadlock_logger.log_mode_switch(pid, old_mode, 'rl_rvo', f'Per-agent exit: {reason}')
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1041,6 +1169,20 @@ class ir_gym(env_base):
             for other_id, other in agent_states.items():
                 if other_id == agent_id:
                     continue
+                # Optional: exclude PAR participants from being neighbors to each other (pipeline-level)
+                try:
+                    exclude_par_in_pipeline = True
+                    try:
+                        exclude_par_in_pipeline = bool(self.deadlock_config.get('EXCLUDE_PAR_NEIGHBORS_IN_PIPELINE', True)) if self.deadlock_config else True
+                    except Exception:
+                        exclude_par_in_pipeline = True
+                    if exclude_par_in_pipeline and hasattr(self, 'get_current_mode'):
+                        m_a = self.get_current_mode(agent_id)
+                        m_b = self.get_current_mode(other_id)
+                        if m_a == 'par' and m_b == 'par':
+                            continue
+                except Exception:
+                    pass
                 pos = other.get('position')
                 if not isinstance(pos, (list, tuple, np.ndarray)) or len(pos) < 2:
                     continue

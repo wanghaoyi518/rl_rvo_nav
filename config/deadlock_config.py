@@ -30,19 +30,21 @@ class DeadlockConfig:
             # Deadlock Detection Parameters
             'DEADLOCK_DETECTION_ENABLED': True,
             'TRIGGER_TYPE': 'SPEED_BUFFER',  # Use speed buffer trigger for deadlock detection
-            'SMALL_SPEED': 0.2,  # Velocity threshold for deadlock detection (reduced from 0.3 to 0.2 for more sensitive detection)
+            'SMALL_SPEED': 0.3,  # Slightly higher to classify more agents as slow
             'VELOCITY_WINDOW_SIZE': 10,  # Number of time steps for velocity averaging (reduced from 50 to 20 for faster response)
             'MAPF_NUM': 4,  # Minimum number of agents to trigger PAR (reduced from 10 to 4 to match 8 robots)
-            'SIGHT_RADIUS': 7.0,  # Radius for detecting nearby agents (reduced from 5.0 to 3.0 for more precise detection)
+            'SIGHT_RADIUS': 7.0,  # Radius for detecting nearby agents
             'EPISODE_START_DELAY': 0,  # Delay before starting deadlock detection (reduced from 50 to 5 for early detection)
 
-            # Unified risk model parameters
-            'RISK_TTC_THRESHOLD': 1.0,
-            'RISK_DMIN_THRESHOLD': 0.6,
-            'RISK_WEIGHTS': {'ttc': 1.0, 'dmin': 0.5},
-            'CORE_PAIR_ONLY': True,
-            'CONSENSUS_JACCARD_THRESHOLD': 0.5,
-            'MAX_CORE_PAIRS_PER_STEP': 1,
+            # Enhanced SPEED_BUFFER trigger thresholds
+            'TTC_THRESHOLD': 3.0,              # Slightly relaxed TTC gate
+            'DMIN_THRESHOLD': 0.6,             # Slightly relaxed Dmin gate
+            'REQUIRED_NON_PROGRESS_NEIGHBORS': 1,  # neighbors count threshold
+
+            # Waypoint-stuck independent trigger
+            'ENABLE_WAYPOINT_STUCK_TRIGGER': True,
+            'WAYPOINT_STUCK_STEPS': 100,       # steps before triggering (recommend >=100)
+            
             
             # PAR Algorithm Parameters
             'PAR_OFFSET': 2,  # Offset for expanding PAR region
@@ -62,7 +64,7 @@ class DeadlockConfig:
             'PARTICIPANT_LOCK_STEPS': 5,  # Lock participant set for N steps to avoid oscillation (Experiment B)
             
             # Communication and Coordination Parameters
-            'COMMUNICATION_RANGE': 10.0,  # Communication range for agents
+            'COMMUNICATION_RANGE': 10.0,  # Communication range for agents (explicit per request)
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
             
             # Performance and Debug Parameters
@@ -76,6 +78,15 @@ class DeadlockConfig:
             'MAX_PAR_PARTICIPANTS': 10,  # Maximum number of PAR participants
             'PAR_TIMEOUT': 1000,  # Timeout for PAR execution
             'ENABLE_POSITION_SYNC': True,  # Enable position synchronization after PAR
+
+            # PAR execution interactions (RVO/neighbor/yielding)
+            'EXCLUDE_PAR_NEIGHBORS_IN_RVO': False,      # Step 4 (set False to enable RVO mutual avoidance among PAR agents)
+            'EXCLUDE_PAR_NEIGHBORS_IN_PIPELINE': True,  # Step 7
+            'NON_PAR_YIELDING_ENABLED': True,           # Step 5
+            'NON_PAR_YIELD_RADIUS': 2.0,
+            'NON_PAR_YIELD_SPEED_SCALE': 0.5,
+            'PAR_TRACK_SPEED_LIMIT': 0.3,
+            'PAR_AGENT_MAX_STEPS': 0,                  # 0 disables per-agent timeout
             
             # MAPF solver parameters
             'PAR_MAX_STEPS': 2000,  # Maximum steps for MAPF solver
@@ -270,6 +281,25 @@ class DeadlockConfig:
         
         if self.get('GOAL_TOLERANCE', 0) <= 0:
             errors.append("GOAL_TOLERANCE must be positive")
+
+        # New: Enhanced SPEED_BUFFER gates
+        if self.get('TTC_THRESHOLD', 0) <= 0:
+            errors.append("TTC_THRESHOLD must be positive")
+        if self.get('DMIN_THRESHOLD', 0) <= 0:
+            errors.append("DMIN_THRESHOLD must be positive")
+        if self.get('REQUIRED_NON_PROGRESS_NEIGHBORS', -1) < 0:
+            errors.append("REQUIRED_NON_PROGRESS_NEIGHBORS must be non-negative")
+
+        # New: PAR interaction controls
+        if self.get('NON_PAR_YIELD_RADIUS', -1) < 0:
+            errors.append("NON_PAR_YIELD_RADIUS must be non-negative")
+        s = self.get('NON_PAR_YIELD_SPEED_SCALE', 0)
+        if s <= 0 or s > 1:
+            errors.append("NON_PAR_YIELD_SPEED_SCALE must be in (0, 1]")
+        if self.get('PAR_TRACK_SPEED_LIMIT', 0) <= 0:
+            errors.append("PAR_TRACK_SPEED_LIMIT must be positive")
+        if self.get('PAR_AGENT_MAX_STEPS', -1) < 0:
+            errors.append("PAR_AGENT_MAX_STEPS must be >= 0 (0 disables timeout)")
         
         # Check hybrid detection parameters
         if self.get('TRIGGER_TYPE') == 'HYBRID':
@@ -300,10 +330,10 @@ class DeadlockConfig:
         if speed_buffer_min_history_ratio <= 0 or speed_buffer_min_history_ratio > 1:
             errors.append("SPEED_BUFFER_MIN_HISTORY_RATIO must be between 0 and 1")
         
-        # Check trigger type
+        # Check trigger type: only SPEED_BUFFER is supported
         trigger_type = self.get('TRIGGER_TYPE')
-        if trigger_type not in ['SPEED_BUFFER', 'UNIFIED']:
-            errors.append("TRIGGER_TYPE must be one of 'SPEED_BUFFER', 'UNIFIED'")
+        if trigger_type not in ['SPEED_BUFFER']:
+            errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER'")
         
         # Report errors
         if errors:
