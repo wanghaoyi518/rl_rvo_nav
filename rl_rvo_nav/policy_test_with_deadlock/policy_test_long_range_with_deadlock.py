@@ -31,7 +31,7 @@ parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
 parser.add_argument('--robot_number', type=int, default='8')
-parser.add_argument('--num_episodes', type=int, default='1')
+parser.add_argument('--num_episodes', type=int, default='10')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
@@ -99,7 +99,7 @@ pt = post_train_with_deadlock(
     render=policy_args.render,
     std_factor=0.001,
     acceler_vel=1.0,
-    max_ep_len=500,
+    max_ep_len=1000,
     neighbors_region=args.neighbors_region,
     neighbor_num=args.neighbors_num,
     args=args,

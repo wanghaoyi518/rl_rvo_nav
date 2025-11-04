@@ -46,6 +46,25 @@ class ir_gym(env_base):
 
         self.rvo_state_dim = 8
         
+        # Cache initial final goals at construction time to ensure per-episode reset consistency
+        self._initial_final_goals = []
+        try:
+            if hasattr(self, 'robot_list') and isinstance(self.robot_list, list) and len(self.robot_list) > 0:
+                for robot in self.robot_list:
+                    g = getattr(robot, 'goal', None)
+                    goal_xy = None
+                    try:
+                        if g is not None:
+                            if hasattr(g, 'shape') and getattr(g, 'shape', [0])[0] >= 2:
+                                goal_xy = [float(g[0, 0]), float(g[1, 0])]
+                            elif isinstance(g, (list, tuple)) and len(g) >= 2:
+                                goal_xy = [float(g[0]), float(g[1])]
+                    except Exception:
+                        goal_xy = None
+                    self._initial_final_goals.append(goal_xy)
+        except Exception:
+            self._initial_final_goals = []
+
         # Deadlock resolution module initialization
         self.enable_deadlock_resolution = enable_deadlock_resolution
         self.deadlock_detector = None
@@ -378,6 +397,22 @@ class ir_gym(env_base):
         
         self.components['robots'].robots_reset(reset_mode, **kwargs)
         
+        # Restore goals to the initial configured final goals for manual/config modes (0/8)
+        try:
+            robots_comp = self.components.get('robots', None)
+            init_mode = getattr(robots_comp, 'init_mode', None)
+            if init_mode in (0, 8) and hasattr(self, 'robot_list') and isinstance(self._initial_final_goals, list):
+                for i, robot in enumerate(self.robot_list):
+                    if i < len(self._initial_final_goals) and self._initial_final_goals[i] is not None:
+                        gx, gy = self._initial_final_goals[i]
+                        import numpy as np
+                        try:
+                            robot.goal = np.array([[float(gx)], [float(gy)]])
+                        except Exception:
+                            robot.goal = [float(gx), float(gy)]
+        except Exception:
+            pass
+
         # Reset deadlock detection for new episode
         if self.enable_deadlock_resolution and hasattr(self, 'deadlock_detector') and self.deadlock_detector:
             self.deadlock_detector.reset_episode()
@@ -500,7 +535,18 @@ class ir_gym(env_base):
                             'final_goal': convert_to_serializable(goal),
                             'waypoints': convert_to_serializable(waypoints)
                         }
-                        self._waypoint_managers[aid] = WaypointManager(aid, waypoints, reach_threshold=reach_thr)
+                        # Waypoint force-switch config
+                        try:
+                            fs_enabled = True if not self.deadlock_config else bool(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_ENABLED', True))
+                        except Exception:
+                            fs_enabled = True
+                        try:
+                            fs_steps = 120 if not self.deadlock_config else int(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_STEPS', 120))
+                        except Exception:
+                            fs_steps = 120
+                        self._waypoint_managers[aid] = WaypointManager(aid, waypoints, reach_threshold=reach_thr,
+                                                                        force_switch_enabled=fs_enabled,
+                                                                        force_switch_steps=fs_steps)
                         cur_goal = self._waypoint_managers[aid].get_current_goal()
                         if cur_goal is not None:
                             try:
@@ -778,7 +824,18 @@ class ir_gym(env_base):
                                             if not hasattr(cur_mgr, '_is_par_manager'):
                                                 self._saved_lr_managers[participant_id] = cur_mgr
                                         # Replace manager for this agent with PAR waypoints and mark as PAR
-                                        par_mgr = WaypointManager(participant_id, cont_path, reach_threshold=tol)
+                                        # Waypoint force-switch config for PAR tracking as well
+                                        try:
+                                            fs_enabled = True if not self.deadlock_config else bool(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_ENABLED', True))
+                                        except Exception:
+                                            fs_enabled = True
+                                        try:
+                                            fs_steps = 120 if not self.deadlock_config else int(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_STEPS', 120))
+                                        except Exception:
+                                            fs_steps = 120
+                                        par_mgr = WaypointManager(participant_id, cont_path, reach_threshold=tol,
+                                                                  force_switch_enabled=fs_enabled,
+                                                                  force_switch_steps=fs_steps)
                                         setattr(par_mgr, '_is_par_manager', True)
                                         self._waypoint_managers[participant_id] = par_mgr
                                         cur_goal = par_mgr.get_current_goal()
@@ -867,9 +924,9 @@ class ir_gym(env_base):
         try:
             par_speed_cap = 0.1
             try:
-                par_speed_cap = float(self.deadlock_config.get('PAR_TRACK_SPEED_LIMIT', 0.3)) if self.deadlock_config else 0.3
+                par_speed_cap = float(self.deadlock_config.get('PAR_TRACK_SPEED_LIMIT', 1.0)) if self.deadlock_config else 1.0
             except Exception:
-                par_speed_cap = 0.3
+                par_speed_cap = 1.0
             for aid2 in range(len(modified_action_list)):
                 mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
                 if mode2 != 'par':
@@ -1056,7 +1113,19 @@ class ir_gym(env_base):
                                     timed_out = (int(self.step_count) - enter_step) >= par_timeout_steps
                             except Exception:
                                 timed_out = False
-                        if not completed and not timed_out:
+                        # New: exit PAR if stay on current waypoint exceeds 2x force-switch threshold
+                        stay_fail = False
+                        try:
+                            fs_steps2 = 0
+                            if self.deadlock_config:
+                                fs_steps2 = int(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_STEPS', 0))
+                            if fs_steps2 > 0 and pid in self._waypoint_managers:
+                                mgr2 = self._waypoint_managers[pid]
+                                if hasattr(mgr2, '_is_par_manager') and hasattr(mgr2, '_stay_steps'):
+                                    stay_fail = int(getattr(mgr2, '_stay_steps', 0)) >= (2 * fs_steps2)
+                        except Exception:
+                            stay_fail = False
+                        if not completed and not timed_out and not stay_fail:
                             continue
                         # Perform per-agent exit
                         old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'par'
@@ -1074,7 +1143,7 @@ class ir_gym(env_base):
                         except Exception:
                             pass
                         if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                            reason = 'PAR manager completed' if completed else f'timeout({par_timeout_steps})'
+                            reason = 'PAR manager completed' if completed else (f'timeout({par_timeout_steps})' if timed_out else f'stay_fail(>={2 * fs_steps2})')
                             self.deadlock_logger.log_mode_switch(pid, old_mode, 'rl_rvo', f'Per-agent exit: {reason}')
                     except Exception:
                         pass

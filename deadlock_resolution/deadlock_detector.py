@@ -617,42 +617,101 @@ class DeadlockDetector:
         return list(dict.fromkeys(participants))
 
     def _build_local_conflict_graph(self, seed_id: int, agent_states: Dict) -> Dict[int, List[int]]:
-        """在通信半径内，根据双向不前进与TTC/DMIN风险门槛构建无向图。"""
+        """基于多跳BFS的局部冲突图：
+        - 从seed出发，按通信半径逐层扩展至 MAX_GRAPH_HOPS 层；
+        - 仅纳入“活跃且未到达”的个体（有足够速度历史、低速且不朝目标推进）；
+        - 每层限制新增候选数量，整体限制总节点数；
+        - 图为无向，边依据 TTC/DMIN 风险阈值建立。
+        """
         graph: Dict[int, List[int]] = {}
-        comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
-        # 候选：seed的通信邻居 + seed 本身
-        candidates = [seed_id] + self._get_neighbors_in_range(seed_id, agent_states, comm_range)
+        if seed_id not in agent_states:
+            return graph
 
-        # 仅考虑具有足够速度历史的活跃体，且未到达目标
+        comm_range = float(self.config.get('COMMUNICATION_RANGE', 7.0))
+        max_hops = int(self.config.get('MAX_GRAPH_HOPS', 2))
+        per_hop_cap = int(self.config.get('MAX_CANDIDATES_PER_HOP', 12))
+        max_nodes = int(self.config.get('MAX_GRAPH_NODES', 20))
         min_hist = int(self.velocity_window_size * 0.8)
-        active = []
-        for nid in candidates:
+
+        def is_arrived(nid: int) -> bool:
             try:
-                if self.calculate_distance_to_goal(agent_states.get(nid, {})) <= float(self.goal_tolerance):
-                    continue
+                return self.calculate_distance_to_goal(agent_states.get(nid, {})) <= float(self.goal_tolerance)
             except Exception:
-                pass
-            if nid in self.velocity_history and len(self.velocity_history[nid]) >= min_hist:
-                avg = self.calculate_average_velocity(nid)
-                if math.isfinite(avg) and avg < self.small_speed and self._is_not_progressing_toward_goal(agent_states.get(nid, {})):
-                    active.append(nid)
-        # 初始化图节点
-        for nid in active:
+                return False
+
+        def is_active(nid: int) -> bool:
+            if is_arrived(nid):
+                return False
+            if nid not in self.velocity_history or len(self.velocity_history[nid]) < min_hist:
+                return False
+            avg = self.calculate_average_velocity(nid)
+            if not (math.isfinite(avg) and avg < self.small_speed):
+                return False
+            return self._is_not_progressing_toward_goal(agent_states.get(nid, {}))
+
+        # 多跳BFS：仅通过“活跃”前沿扩展
+        visited = set()
+        active_nodes: List[int] = []
+
+        # 确保seed进入图（即便seed不满足active，也保留其节点用于连通分量提取）
+        active_nodes.append(seed_id)
+
+        frontier = [seed_id]
+        hops = 0
+        while frontier and hops < max_hops and len(active_nodes) < max_nodes:
+            next_candidates: List[int] = []
+            for u in frontier:
+                if u in visited:
+                    continue
+                visited.add(u)
+                # 邻域内候选
+                nbrs = self._get_neighbors_in_range(u, agent_states, comm_range)
+                for v in nbrs:
+                    if v in visited:
+                        continue
+                    if v in active_nodes:
+                        continue
+                    # 仅把“活跃未到达”的加入下一层候选
+                    if is_active(v):
+                        next_candidates.append(v)
+            # 去重并按容量裁剪
+            dedup = []
+            seen = set()
+            for nid in next_candidates:
+                if nid not in seen and nid not in active_nodes:
+                    dedup.append(nid)
+                    seen.add(nid)
+            # 控制本层新增与总量上限
+            remaining = max(0, max_nodes - len(active_nodes))
+            take = min(per_hop_cap, remaining)
+            dedup = dedup[:take]
+            # 纳入活跃节点集
+            active_nodes.extend(dedup)
+            # 下一层前沿
+            frontier = dedup
+            hops += 1
+
+        # 构建无向图：按风险阈值加边（在active_nodes内，两两评估）
+        # 若seed并非active，但已被强制纳入，则其与他人也可建立边
+        for nid in active_nodes:
             graph[nid] = []
 
-        # 加边：两两满足风险门槛（TTC或DMIN）
         th_ttc = float(self.ttc_threshold)
         th_dmin = float(self.dmin_threshold)
-        for i in range(len(active)):
-            a = active[i]
-            for j in range(i + 1, len(active)):
-                b = active[j]
+        for i in range(len(active_nodes)):
+            a = active_nodes[i]
+            for j in range(i + 1, len(active_nodes)):
+                b = active_nodes[j]
+                # 跳过已到达者（健壮性双重过滤）
+                if is_arrived(a) or is_arrived(b):
+                    continue
                 m = self._compute_pair_metrics(agent_states.get(a, {}), agent_states.get(b, {}))
                 ttc = m.get('ttc', float('inf'))
                 dmin = m.get('dmin', float('inf'))
                 if (math.isfinite(ttc) and ttc <= th_ttc) or (math.isfinite(dmin) and dmin <= th_dmin):
                     graph[a].append(b)
                     graph[b].append(a)
+
         return graph
 
     def _extract_component(self, graph: Dict[int, List[int]], seed_id: int) -> set:

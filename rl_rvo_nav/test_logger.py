@@ -42,8 +42,13 @@ class TestLogger:
             "episodes": {}
         }
         
-        # Initialize visualizer
-        self.visualizer = TestVisualizer(test_type=test_type)
+        # Initialize visualizer (can be disabled via env var: DISABLE_TEST_VIS=1/true/yes)
+        disable_vis_env = os.environ.get('DISABLE_TEST_VIS', '0')
+        self._enable_visualization = str(disable_vis_env).lower() not in ('1', 'true', 'yes')
+        if self._enable_visualization:
+            self.visualizer = TestVisualizer(test_type=test_type)
+        else:
+            self.visualizer = None
         
         # print(f"Test logger initialized. Session directory: {self.session_dir}")
     
@@ -166,11 +171,12 @@ class TestLogger:
         with open(episode_file, 'w') as f:
             json.dump(self.current_episode_data, f, indent=2)
         
-        # Create visualization for this episode
-        try:
-            self.visualizer.create_episode_visualization(self.current_episode_data, self.current_episode)
-        except Exception as e:
-            print(f"Warning: Could not create visualization for episode {self.current_episode}: {e}")
+        # Create visualization for this episode (if enabled)
+        if self.visualizer is not None:
+            try:
+                self.visualizer.create_episode_visualization(self.current_episode_data, self.current_episode)
+            except Exception as e:
+                print(f"Warning: Could not create visualization for episode {self.current_episode}: {e}")
         
         # print(f"Episode {self.current_episode} completed. Success: {success}, Length: {episode_length}, Steps: {self.episode_step_count}")
         
@@ -370,5 +376,5 @@ class TestLogger:
             env: Environment object
         """
         self.env = env
-        if hasattr(self, 'visualizer'):
+        if getattr(self, 'visualizer', None) is not None:
             self.visualizer.set_environment(env)

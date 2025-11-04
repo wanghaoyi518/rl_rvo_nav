@@ -44,6 +44,10 @@ class DeadlockConfig:
             # Waypoint-stuck independent trigger
             'ENABLE_WAYPOINT_STUCK_TRIGGER': True,
             'WAYPOINT_STUCK_STEPS': 100,       # steps before triggering (recommend >=100)
+
+            # Waypoint force-switch (advance to next waypoint after N steps without reaching)
+            'FORCE_WAYPOINT_SWITCH_ENABLED': True,
+            'FORCE_WAYPOINT_SWITCH_STEPS': 20,
             
             
             # PAR Algorithm Parameters
@@ -68,7 +72,7 @@ class DeadlockConfig:
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
             
             # Performance and Debug Parameters
-            'DEBUG_MODE': True,  # Enable debug output for PAR diagnostics
+            'DEBUG_MODE': False,  # Enable debug output for PAR diagnostics
             'LOG_LEVEL': 'WARNING',  # Reduce logging level
             'SAVE_STATISTICS': False,  # Disable statistics saving to reduce I/O
             'STATISTICS_INTERVAL': 100,  # Interval for saving statistics
@@ -87,6 +91,11 @@ class DeadlockConfig:
             'NON_PAR_YIELD_SPEED_SCALE': 0.5,
             'PAR_TRACK_SPEED_LIMIT': 0.3,
             'PAR_AGENT_MAX_STEPS': 0,                  # 0 disables per-agent timeout
+
+            # Multi-hop conflict graph parameters
+            'MAX_GRAPH_HOPS': 2,               # BFS hops for local conflict graph (neighbor's neighbor)
+            'MAX_CANDIDATES_PER_HOP': 12,      # Per-hop candidate cap
+            'MAX_GRAPH_NODES': 20,             # Total graph node cap
             
             # MAPF solver parameters
             'PAR_MAX_STEPS': 2000,  # Maximum steps for MAPF solver
@@ -300,6 +309,20 @@ class DeadlockConfig:
             errors.append("PAR_TRACK_SPEED_LIMIT must be positive")
         if self.get('PAR_AGENT_MAX_STEPS', -1) < 0:
             errors.append("PAR_AGENT_MAX_STEPS must be >= 0 (0 disables timeout)")
+        
+        # New: multi-hop graph parameters
+        if int(self.get('MAX_GRAPH_HOPS', 0)) <= 0:
+            errors.append("MAX_GRAPH_HOPS must be positive")
+        if int(self.get('MAX_CANDIDATES_PER_HOP', 0)) <= 0:
+            errors.append("MAX_CANDIDATES_PER_HOP must be positive")
+        if int(self.get('MAX_GRAPH_NODES', 0)) <= 0:
+            errors.append("MAX_GRAPH_NODES must be positive")
+
+        # Waypoint force-switch parameters
+        if not isinstance(self.get('FORCE_WAYPOINT_SWITCH_ENABLED', True), bool):
+            errors.append("FORCE_WAYPOINT_SWITCH_ENABLED must be boolean")
+        if int(self.get('FORCE_WAYPOINT_SWITCH_STEPS', 0)) <= 0:
+            errors.append("FORCE_WAYPOINT_SWITCH_STEPS must be positive")
         
         # Check hybrid detection parameters
         if self.get('TRIGGER_TYPE') == 'HYBRID':
