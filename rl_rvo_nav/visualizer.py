@@ -286,8 +286,10 @@ class TestVisualizer:
         self._draw_map_elements(ax, start_positions, goal_positions)
         
         # Draw waypoint paths if available (for long-range navigation)
-        if waypoint_data:
-            self._draw_waypoints(ax, waypoint_data)
+        # Disabled per request: do not draw global waypoint trajectories in different colors
+        draw_waypoints = False
+        # if waypoint_data and draw_waypoints:
+        #     self._draw_waypoints(ax, waypoint_data)
         
         # Initialize agent circles
         agent_circles = []
@@ -303,10 +305,21 @@ class TestVisualizer:
                           fontsize=8, fontweight='bold', color='white')
             agent_texts.append(text)
         
-        # Add step counter
-        step_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, 
-                           fontsize=12, fontweight='bold',
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+        # Add step counter (moved to figure bottom-right, outside map area)
+        step_text = None
+        fig_step_text = fig.text(0.98, 0.05, '', ha='right', va='bottom',
+                                 fontsize=12, fontweight='bold',
+                                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+        
+        # Episode status (success/fail)
+        success_flag = bool(episode_data.get('success', False))
+        status_str = 'SUCCESS' if success_flag else 'FAIL'
+        status_color = 'green' if success_flag else 'red'
+        # Move status to figure bottom-right, outside map
+        status_text = fig.text(0.98, 0.10, f'Status: {status_str}',
+                               ha='right', va='bottom', fontsize=12, fontweight='bold',
+                               color=status_color,
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
         
         # Add legend
         legend_elements = [
@@ -318,7 +331,7 @@ class TestVisualizer:
         ]
         
         # Add waypoint legend if waypoint data exists
-        if waypoint_data:
+        if waypoint_data and draw_waypoints:
             legend_elements.extend([
                 patches.Patch(color='gray', label='Waypoint Path'),
                 patches.Patch(color='gray', label='Waypoint (S=Start, E=End)')
@@ -353,9 +366,9 @@ class TestVisualizer:
                         agent_circles[i].set_color(self.rl_agent_color)
             
             # Update step counter
-            step_text.set_text(f'Step: {frame + 1}/{len(steps)}')
+            fig_step_text.set_text(f'Step: {frame + 1}/{len(steps)}')
             
-            return agent_circles + agent_texts + [step_text]
+            return agent_circles + agent_texts + [fig_step_text]
         
         # Create animation
         anim = FuncAnimation(fig, animate, frames=len(steps), 
@@ -396,8 +409,8 @@ class TestVisualizer:
                                          color='green', alpha=0.8, linewidth=2)
                 ax.add_patch(square)
                 # Add start label
-                ax.text(x, y - 0.3, f'S{i}', ha='center', va='center', 
-                       fontsize=8, fontweight='bold', color='green')
+                ax.text(x, y - 0.3, f'Start {i+1}', ha='center', va='center', 
+                       fontsize=12, fontweight='bold', color='green')
         
         # Draw goal positions (green stars)
         if goal_positions:
@@ -407,8 +420,8 @@ class TestVisualizer:
                                             orientation=0, color='green', alpha=0.8)
                 ax.add_patch(star)
                 # Add goal label
-                ax.text(x, y + 0.3, f'G{i}', ha='center', va='center', 
-                       fontsize=8, fontweight='bold', color='green')
+                ax.text(x, y + 0.3, f'Goal {i+1}', ha='center', va='center', 
+                       fontsize=12, fontweight='bold', color='green')
     
     def _draw_waypoints(self, ax, waypoint_data):
         """Draw waypoint paths for long-range navigation"""

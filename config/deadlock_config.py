@@ -90,6 +90,7 @@ class DeadlockConfig:
             'NON_PAR_YIELD_RADIUS': 2.0,
             'NON_PAR_YIELD_SPEED_SCALE': 0.5,
             'PAR_TRACK_SPEED_LIMIT': 0.3,
+            'PAR_TRACK_SPEED_LIMIT_SINGLE': 0.6,        # Single-agent fallback: higher cap for faster tracking
             'PAR_AGENT_MAX_STEPS': 0,                  # 0 disables per-agent timeout
 
             # Multi-hop conflict graph parameters
@@ -102,8 +103,18 @@ class DeadlockConfig:
             'PAR_HEURISTIC_WEIGHT': 0.6,  # Heuristic weight for A* search
             
             # Single agent deadlock trigger parameters
+            'SINGLE_AGENT_TRIGGER_ENABLED': True,  # Enable single-agent fallback trigger
             'SINGLE_AGENT_TIME_THRESHOLD': 50,  # Time threshold for single agent deadlock trigger
             'MAX_NEIGHBORS_FOR_SINGLE_TRIGGER': 1,  # Maximum number of active neighbors for single agent trigger
+
+            # Single-agent environment and yielding
+            'ENABLE_SINGLE_AGENT_CORRIDOR': True,              # Enable corridor crop for single-agent fallback
+            'PAR_SINGLE_AGENT_CORRIDOR_RADIUS': 2.0,           # meters
+            'ARRIVED_AGENTS_AS_OBSTACLES': True,               # Overlay arrived agents as static obstacles
+            'ARRIVED_AGENT_INFLATION_CELLS': 1,                # cells
+            'ARRIVED_GOAL_TOLERANCE': 0.3,                     # meters
+            'SINGLE_AGENT_YIELD_RADIUS': 2.0,                  # meters
+            'SINGLE_AGENT_YIELD_SPEED_SCALE': 0.4,             # (0,1]
         }
         
         # Load configuration from file if provided
@@ -307,6 +318,8 @@ class DeadlockConfig:
             errors.append("NON_PAR_YIELD_SPEED_SCALE must be in (0, 1]")
         if self.get('PAR_TRACK_SPEED_LIMIT', 0) <= 0:
             errors.append("PAR_TRACK_SPEED_LIMIT must be positive")
+        if self.get('PAR_TRACK_SPEED_LIMIT_SINGLE', 0) <= 0:
+            errors.append("PAR_TRACK_SPEED_LIMIT_SINGLE must be positive")
         if self.get('PAR_AGENT_MAX_STEPS', -1) < 0:
             errors.append("PAR_AGENT_MAX_STEPS must be >= 0 (0 disables timeout)")
         
@@ -323,6 +336,17 @@ class DeadlockConfig:
             errors.append("FORCE_WAYPOINT_SWITCH_ENABLED must be boolean")
         if int(self.get('FORCE_WAYPOINT_SWITCH_STEPS', 0)) <= 0:
             errors.append("FORCE_WAYPOINT_SWITCH_STEPS must be positive")
+
+        # Single-agent fallback and environment parameters
+        if not isinstance(self.get('SINGLE_AGENT_TRIGGER_ENABLED', True), bool):
+            errors.append("SINGLE_AGENT_TRIGGER_ENABLED must be boolean")
+        if float(self.get('PAR_SINGLE_AGENT_CORRIDOR_RADIUS', 0)) <= 0:
+            errors.append("PAR_SINGLE_AGENT_CORRIDOR_RADIUS must be positive")
+        if int(self.get('ARRIVED_AGENT_INFLATION_CELLS', -1)) < 0:
+            errors.append("ARRIVED_AGENT_INFLATION_CELLS must be >= 0")
+        yscale = float(self.get('SINGLE_AGENT_YIELD_SPEED_SCALE', 0))
+        if yscale <= 0 or yscale > 1:
+            errors.append("SINGLE_AGENT_YIELD_SPEED_SCALE must be in (0, 1]")
         
         # Check hybrid detection parameters
         if self.get('TRIGGER_TYPE') == 'HYBRID':

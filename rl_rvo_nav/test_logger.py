@@ -208,11 +208,72 @@ class TestLogger:
                 "average_length": float(avg_length),
                 "average_steps": float(avg_steps)
             }
+
+            # Build compact stats for quick review and save to session_stats.json
+            timeout_episodes = 0
+            rl_rl_collision_eps = 0
+            rl_par_collision_eps = 0
+            par_par_collision_eps = 0
+            any_agent_obstacle_eps = 0
+
+            for ep in episodes:
+                if ep.get("success", False):
+                    continue
+                reasons = ep.get("failure_reason", []) or []
+                if isinstance(reasons, dict):
+                    reasons = [reasons]
+
+                # Episode-level flags (avoid duplicate counting)
+                ep_timeout = False
+                ep_rl_rl = False
+                ep_rl_par = False
+                ep_par_par = False
+                ep_agent_obstacle = False
+
+                for r in reasons:
+                    rtype = r.get('type', '')
+                    if rtype == 'timeout':
+                        ep_timeout = True
+                    elif rtype == 'robot_robot':
+                        m1 = str(r.get('robot_mode', 'rl_rvo')).lower()
+                        m2 = str(r.get('other_robot_mode', 'rl_rvo')).lower()
+                        if m1 == 'par' and m2 == 'par':
+                            ep_par_par = True
+                        elif (m1 == 'par' and m2 != 'par') or (m2 == 'par' and m1 != 'par'):
+                            ep_rl_par = True
+                        else:
+                            ep_rl_rl = True
+                    elif rtype == 'robot_obstacle':
+                        ep_agent_obstacle = True
+
+                timeout_episodes += 1 if ep_timeout else 0
+                rl_rl_collision_eps += 1 if ep_rl_rl else 0
+                rl_par_collision_eps += 1 if ep_rl_par else 0
+                par_par_collision_eps += 1 if ep_par_par else 0
+                any_agent_obstacle_eps += 1 if ep_agent_obstacle else 0
+
+            session_stats = {
+                "total_episodes": total_episodes,
+                "success_episodes": successful_episodes,
+                "timeout_episodes": timeout_episodes,
+                "collision_rl_rl_episodes": rl_rl_collision_eps,
+                "collision_rl_par_episodes": rl_par_collision_eps,
+                "collision_par_par_episodes": par_par_collision_eps,
+                "collision_agent_obstacle_episodes": any_agent_obstacle_eps
+            }
         
         # Save session summary
         summary_file = self.session_dir / "session_summary.json"
         with open(summary_file, 'w') as f:
             json.dump(self.session_metadata, f, indent=2)
+        
+        # Save compact session stats (if built)
+        try:
+            stats_file = self.session_dir / "session_stats.json"
+            with open(stats_file, 'w') as f:
+                json.dump(session_stats, f, indent=2)
+        except Exception:
+            pass
         
         # print(f"Session summary saved to {summary_file}")
     

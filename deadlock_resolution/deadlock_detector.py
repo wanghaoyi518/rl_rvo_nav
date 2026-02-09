@@ -186,6 +186,33 @@ class DeadlockDetector:
         # Independent waypoint-stuck trigger (does not modify speed buffer logic)
         result_wp = self.check_waypoint_stuck_trigger(agent_id, agent_states)
         result = bool(result_speed or result_wp)
+
+        # Single-agent fallback trigger: when only one unfinished agent remains
+        try:
+            single_enabled = bool(self.config.get('SINGLE_AGENT_TRIGGER_ENABLED', True)) if isinstance(self.config, dict) else True
+        except Exception:
+            single_enabled = True
+        if not result and single_enabled:
+            try:
+                tol = float(self.goal_tolerance)
+            except Exception:
+                tol = 0.5
+            unfinished = []
+            for aid, st in agent_states.items():
+                try:
+                    if self.calculate_distance_to_goal(st) > tol:
+                        unfinished.append(aid)
+                except Exception:
+                    pass
+            if len(unfinished) == 1 and unfinished[0] == agent_id:
+                # Last unfinished agent: allow relaxed trigger based on slow/not-progressing or waypoint-stuck
+                is_not_prog = self._is_not_progressing_toward_goal(agent_states.get(agent_id, {}))
+                avg_v = self.calculate_average_velocity(agent_id)
+                slow_enough = (avg_v < self.small_speed)
+                # Also allow time-based release if needed
+                time_ok = (self.step_counter >= int(self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)))
+                if result_wp or (is_not_prog and (slow_enough or time_ok)):
+                    result = True
         
         # Log detection result and update cooldown
         if result:
@@ -204,6 +231,17 @@ class DeadlockDetector:
                     meta['trigger_source'] = 'SPEED_BUFFER'
                 else:
                     meta['trigger_source'] = 'COMBINED'
+                # If single-agent condition holds, annotate
+                try:
+                    tol = float(self.goal_tolerance)
+                except Exception:
+                    tol = 0.5
+                try:
+                    unfinished = [aid for aid, st in agent_states.items() if self.calculate_distance_to_goal(st) > tol]
+                except Exception:
+                    unfinished = []
+                if len(unfinished) == 1 and unfinished[0] == agent_id:
+                    meta['single_agent_fallback'] = True
                 try:
                     self.logger.log_deadlock_detection(agent_id, self.trigger_type, meta)
                 except Exception:
@@ -510,6 +548,23 @@ class DeadlockDetector:
         except Exception:
             pass
 
+        # 单人兜底：若仅剩该agent未到达，则直接返回单人集合
+        try:
+            tol = float(self.goal_tolerance)
+        except Exception:
+            tol = 0.5
+        try:
+            single_enabled = bool(self.config.get('SINGLE_AGENT_TRIGGER_ENABLED', True)) if isinstance(self.config, dict) else True
+        except Exception:
+            single_enabled = True
+        if single_enabled:
+            try:
+                unfinished = [aid for aid, st in agent_states.items() if self.calculate_distance_to_goal(st) > tol]
+            except Exception:
+                unfinished = []
+            if len(unfinished) == 1 and unfinished[0] == agent_id:
+                return [agent_id]
+
         # 基于局部冲突图选择参与者：构图→取连通分量→规模上限裁剪→失败回退配对
         participants = [agent_id]
         if agent_id not in agent_states:
@@ -542,8 +597,10 @@ class DeadlockDetector:
         ordered = self._prioritize_component(filtered, agent_states) if len(filtered) > 0 else []
         clipped = ordered[:max(2, max_participants)] if len(ordered) > 0 else []
 
-        # 5) 若裁剪后>=2，采用该集合；否则回退到“最佳邻居配对/超时最近邻”
+        # 5) 若裁剪后>=2，采用该集合；若==1且允许单人兜底，直接返回；否则回退到“最佳邻居配对/超时最近邻”
         if len(clipped) >= 2:
+            participants = clipped
+        elif len(clipped) == 1 and single_enabled:
             participants = clipped
         else:
             # 回退逻辑：沿用原有二人配对策略

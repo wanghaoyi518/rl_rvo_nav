@@ -178,10 +178,34 @@ class PAREnvironment:
                         import numpy as _np
                         h, w = _np.array(self._ws_map_matrix).shape
                         pad = int(self.config.get('PAR_CROP_PADDING', 1)) if isinstance(self.config, dict) else 1
-                        min_col = max(0, min(cols) - pad)
-                        min_row = max(0, min(rows) - pad)
-                        max_col = min(w - 1, max(cols) + pad)
-                        max_row = min(h - 1, max(rows) + pad)
+
+                        # Optional single-agent corridor crop (map_matrix available)
+                        use_corridor = False
+                        try:
+                            enable_corridor = bool(self.config.get('ENABLE_SINGLE_AGENT_CORRIDOR', True)) if isinstance(self.config, dict) else True
+                        except Exception:
+                            enable_corridor = True
+                        if enable_corridor and len(self.participants) == 1 and len(starts_global) == 1 and len(goals_global) == 1 and self._ws_xy_reso is not None:
+                            try:
+                                # Convert corridor radius (meters) to cells if possible
+                                radius_m = float(self.config.get('PAR_SINGLE_AGENT_CORRIDOR_RADIUS', 2.0)) if isinstance(self.config, dict) else 2.0
+                                r_cells = max(1, int(round(radius_m / float(self._ws_xy_reso))))
+                                # Compute axis-aligned rectangle that bounds the segment plus radius
+                                only_id = next(iter(starts_global.keys()))
+                                sc, sr = starts_global[only_id]
+                                gc, gr = goals_global[only_id]
+                                min_col = max(0, min(int(sc), int(gc)) - r_cells - pad)
+                                max_col = min(w - 1, max(int(sc), int(gc)) + r_cells + pad)
+                                min_row = max(0, min(int(sr), int(gr)) - r_cells - pad)
+                                max_row = min(h - 1, max(int(sr), int(gr)) + r_cells + pad)
+                                use_corridor = True
+                            except Exception:
+                                use_corridor = False
+                        if not use_corridor:
+                            min_col = max(0, min(cols) - pad)
+                            min_row = max(0, min(rows) - pad)
+                            max_col = min(w - 1, max(cols) + pad)
+                            max_row = min(h - 1, max(rows) + pad)
 
                         # Slice and binarize obstacles: nonzero -> 1, zero -> 0
                         sliced = _np.array(self._ws_map_matrix, dtype=float)[min_row:max_row + 1, min_col:max_col + 1]
@@ -249,7 +273,8 @@ class PAREnvironment:
                 self.sub_map = full_map
                 self.grid_offset = (0, 0)
             else:
-                # Crop around participants (global grid bbox)
+                # Crop around participants (global grid bbox),
+                # with optional single-agent corridor crop when enabled
                 starts_global = {}
                 goals_global = {}
                 for agent_id in self.participants:
@@ -274,10 +299,32 @@ class PAREnvironment:
                     self.grid_offset = (0, 0)
                 else:
                     pad = int(self.config.get('PAR_CROP_PADDING', 1)) if isinstance(self.config, dict) else 1
-                    min_col = max(0, min(cols) - pad)
-                    min_row = max(0, min(rows) - pad)
-                    max_col = min(full_w - 1, max(cols) + pad)
-                    max_row = min(full_h - 1, max(rows) + pad)
+                    # Optional single-agent corridor crop (analytic obstacles mode)
+                    use_corridor = False
+                    try:
+                        enable_corridor = bool(self.config.get('ENABLE_SINGLE_AGENT_CORRIDOR', True)) if isinstance(self.config, dict) else True
+                    except Exception:
+                        enable_corridor = True
+                    if enable_corridor and len(self.participants) == 1 and len(starts_global) == 1 and len(goals_global) == 1:
+                        try:
+                            res_eff = float(self._ws_xy_reso) if self._ws_xy_reso is not None else float(res)
+                            radius_m = float(self.config.get('PAR_SINGLE_AGENT_CORRIDOR_RADIUS', 2.0)) if isinstance(self.config, dict) else 2.0
+                            r_cells = max(1, int(round(radius_m / res_eff)))
+                            only_id = next(iter(starts_global.keys()))
+                            sc, sr = starts_global[only_id]
+                            gc, gr = goals_global[only_id]
+                            min_col = max(0, min(int(sc), int(gc)) - r_cells - pad)
+                            max_col = min(full_w - 1, max(int(sc), int(gc)) + r_cells + pad)
+                            min_row = max(0, min(int(sr), int(gr)) - r_cells - pad)
+                            max_row = min(full_h - 1, max(int(sr), int(gr)) + r_cells + pad)
+                            use_corridor = True
+                        except Exception:
+                            use_corridor = False
+                    if not use_corridor:
+                        min_col = max(0, min(cols) - pad)
+                        min_row = max(0, min(rows) - pad)
+                        max_col = min(full_w - 1, max(cols) + pad)
+                        max_row = min(full_h - 1, max(rows) + pad)
                     # Slice
                     sliced = [row[min_col:max_col + 1] for row in full_map.grid[min_row:max_row + 1]]
                     sub_map = SubMap(sliced)
@@ -293,6 +340,21 @@ class PAREnvironment:
             self.min_y = self.sub_map.origin_y
             self.max_x = self.sub_map.origin_x + self.sub_map.width * self.sub_map.resolution
             self.max_y = self.sub_map.origin_y + self.sub_map.height * self.sub_map.resolution
+        
+        # In single-agent corridor mode, optionally overlay arrived agents as static obstacles
+        try:
+            enable_corridor = bool(self.config.get('ENABLE_SINGLE_AGENT_CORRIDOR', True)) if isinstance(self.config, dict) else True
+        except Exception:
+            enable_corridor = True
+        try:
+            overlay_arrived = bool(self.config.get('ARRIVED_AGENTS_AS_OBSTACLES', True)) if isinstance(self.config, dict) else True
+        except Exception:
+            overlay_arrived = True
+        if enable_corridor and overlay_arrived and len(self.participants) == 1 and self.sub_map is not None:
+            try:
+                self._overlay_arrived_agents_as_obstacles(agent_states)
+            except Exception:
+                pass
         # print(f"🔍 DEBUG: Sub-map built: {self.sub_map.width} x {self.sub_map.height}")
         
         # Build actor set
@@ -454,7 +516,7 @@ class PAREnvironment:
     def _dilate_obstacle_grid_inplace(self, sub_map: SubMap, iterations: int = 1):
         """Apply 8-neighborhood dilation to SubMap grid in-place for N iterations."""
         try:
-            if sub_map is None or iterations <= 0:
+            if sub_map is None or iterations <= 0 or not hasattr(sub_map, 'grid'):
                 return
             h = getattr(sub_map, 'height', 0)
             w = getattr(sub_map, 'width', 0)
@@ -478,6 +540,77 @@ class PAREnvironment:
             sub_map.grid = cur
         except Exception:
             pass
+
+    def _overlay_arrived_agents_as_obstacles(self, agent_states: Dict):
+        """In single-agent mode, treat already-arrived non-participants as static obstacles.
+
+        Marks their grid cells (within the current sub_map slice) as occupied with optional inflation in cells.
+        """
+        if self.sub_map is None or not hasattr(self.sub_map, 'grid'):
+            return
+        try:
+            tol = float(self.config.get('ARRIVED_GOAL_TOLERANCE', 0.3)) if isinstance(self.config, dict) else 0.3
+        except Exception:
+            tol = 0.3
+        try:
+            inflate = int(self.config.get('ARRIVED_AGENT_INFLATION_CELLS', 1)) if isinstance(self.config, dict) else 1
+        except Exception:
+            inflate = 1
+
+        # Compute slice offset for local indexing
+        off_c, off_r = (0, 0)
+        if isinstance(self.grid_offset, tuple) and len(self.grid_offset) == 2:
+            off_c, off_r = int(self.grid_offset[0]), int(self.grid_offset[1])
+
+        # Helper: mark a square block around local (c,r)
+        def mark_block(local_c: int, local_r: int):
+            h = getattr(self.sub_map, 'height', 0)
+            w = getattr(self.sub_map, 'width', 0)
+            if h <= 0 or w <= 0:
+                return
+            for dr in range(-inflate, inflate + 1):
+                rr = local_r + dr
+                if rr < 0 or rr >= h:
+                    continue
+                row = self.sub_map.grid[rr]
+                for dc in range(-inflate, inflate + 1):
+                    cc = local_c + dc
+                    if cc < 0 or cc >= w:
+                        continue
+                    row[cc] = 1
+
+        # Iterate over all non-participant agents
+        for aid, st in agent_states.items():
+            if aid in self.participants:
+                continue
+            pos = self.get_agent_position(st)
+            goal = self.get_agent_goal(st)
+            if pos is None or goal is None:
+                continue
+            try:
+                # Prefer explicit arrived flags if present
+                arrived_flag = False
+                for key in ('arrived', 'is_arrived', 'finished', 'done'):
+                    v = st.get(key, None) if isinstance(st, dict) else getattr(st, key, None)
+                    if isinstance(v, (bool, int)) and bool(v):
+                        arrived_flag = True
+                        break
+                if not arrived_flag:
+                    dx = float(pos[0]) - float(goal[0])
+                    dy = float(pos[1]) - float(goal[1])
+                    arrived_flag = (math.hypot(dx, dy) <= tol)
+            except Exception:
+                arrived_flag = False
+            if not arrived_flag:
+                continue
+            # Map world -> global grid -> local grid
+            try:
+                gc, gr = self.world_to_grid(float(pos[0]), float(pos[1]))
+                lc = int(gc) - off_c
+                lr = int(gr) - off_r
+                mark_block(lc, lr)
+            except Exception:
+                continue
     
     def _add_obstacle_to_grid(self, sub_map: SubMap, obstacle):
         """Add a single obstacle to the grid."""

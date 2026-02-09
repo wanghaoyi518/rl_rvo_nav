@@ -242,18 +242,35 @@ class post_train:
             failure_reasons = []
             for collision_info in collision_robots:
                 if collision_info['type'] == 'robot_robot':
+                    # Attach RL/PAR-like mode if available (RL-only env may not have modes)
+                    r_id = collision_info['robot_id']
+                    o_id = collision_info['other_robot_id']
+                    try:
+                        get_mode = getattr(self.env, 'get_current_mode', None)
+                        r_mode = get_mode(r_id) if callable(get_mode) else 'rl_rvo'
+                        o_mode = get_mode(o_id) if callable(get_mode) else 'rl_rvo'
+                    except Exception:
+                        r_mode, o_mode = 'rl_rvo', 'rl_rvo'
                     failure_reasons.append({
                         'type': 'robot_robot',
-                        'robot_id': collision_info['robot_id'],
-                        'other_robot_id': collision_info['other_robot_id']
+                        'robot_id': r_id,
+                        'other_robot_id': o_id,
+                        'robot_mode': r_mode,
+                        'other_robot_mode': o_mode
                     })
                 elif collision_info['type'] == 'robot_obstacle':
                     robot_id = collision_info['robot_id']
+                    try:
+                        get_mode = getattr(self.env, 'get_current_mode', None)
+                        r_mode = get_mode(robot_id) if callable(get_mode) else 'rl_rvo'
+                    except Exception:
+                        r_mode = 'rl_rvo'
                     obstacle_type = collision_info['obstacle_type']
                     reason = {
                         'type': 'robot_obstacle',
                         'robot_id': robot_id,
-                        'obstacle_type': obstacle_type
+                        'obstacle_type': obstacle_type,
+                        'robot_mode': r_mode
                     }
                     if obstacle_type in ['circular', 'line', 'polygon']:
                         reason['obstacle_position'] = collision_info['obstacle_position']

@@ -722,8 +722,8 @@ class ir_gym(env_base):
                     deadlock_participants = self.deadlock_detector.get_deadlock_participants(agent_id, agent_states, agent_neighbor_states)
                     print(f"DEBUG: Agent {agent_id} deadlock participants: {deadlock_participants}")
                                         
-                    # Only proceed if we have multiple confirmed participants
-                    if len(deadlock_participants) > 1:
+                    # Proceed if we have at least one participant (single-agent fallback supported)
+                    if len(deadlock_participants) >= 1:
                         try:
                             par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
                             
@@ -751,8 +751,12 @@ class ir_gym(env_base):
                                 if has_path or at_goal:
                                     valid_participants.append(pid)
                             
-                            # Allow switching if we have a core subset (>=2) with valid paths
-                            if len(valid_participants) < 2:
+                            # Allow switching if we have a core subset
+                            # Single-agent fallback: require >=1; otherwise require >=2
+                            required_count = 2
+                            if len(deadlock_participants) == 1:
+                                required_count = 1
+                            if len(valid_participants) < required_count:
                                 continue
                             
                             # Log PAR preparation with agent positions
@@ -927,6 +931,20 @@ class ir_gym(env_base):
                 par_speed_cap = float(self.deadlock_config.get('PAR_TRACK_SPEED_LIMIT', 1.0)) if self.deadlock_config else 1.0
             except Exception:
                 par_speed_cap = 1.0
+            # Check if current step has single PAR agent active to use single-agent cap
+            try:
+                single_cap = float(self.deadlock_config.get('PAR_TRACK_SPEED_LIMIT_SINGLE', par_speed_cap)) if self.deadlock_config else par_speed_cap
+            except Exception:
+                single_cap = par_speed_cap
+            try:
+                par_active_count = 0
+                for _aid in range(len(modified_action_list)):
+                    _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
+                    if _mode == 'par':
+                        par_active_count += 1
+                is_single_par = (par_active_count == 1)
+            except Exception:
+                is_single_par = False
             for aid2 in range(len(modified_action_list)):
                 mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
                 if mode2 != 'par':
@@ -940,8 +958,9 @@ class ir_gym(env_base):
                     if vec.size >= 2:
                         vx, vy = float(vec[0]), float(vec[1])
                         speed = (vx * vx + vy * vy) ** 0.5
-                        if speed > par_speed_cap and speed > 1e-8:
-                            scale = par_speed_cap / speed
+                        cap = single_cap if is_single_par else par_speed_cap
+                        if speed > cap and speed > 1e-8:
+                            scale = cap / speed
                             vx *= scale
                             vy *= scale
                             modified_action_list[aid2] = _np.array([vx, vy], dtype=float)
@@ -987,6 +1006,13 @@ class ir_gym(env_base):
                             pass
 
                     if len(par_ids) > 0:
+                        # Single-agent fallback: use stronger and more localized yielding
+                        try:
+                            if len(par_ids) == 1:
+                                yield_radius = float(self.deadlock_config.get('SINGLE_AGENT_YIELD_RADIUS', yield_radius)) if self.deadlock_config else yield_radius
+                                yield_scale = float(self.deadlock_config.get('SINGLE_AGENT_YIELD_SPEED_SCALE', yield_scale)) if self.deadlock_config else yield_scale
+                        except Exception:
+                            pass
                         for _aid in range(len(modified_action_list)):
                             try:
                                 _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
