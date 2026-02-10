@@ -65,7 +65,8 @@ class post_train:
                     'policy_type': policy_type,
                     'reset_mode': self.reset_mode,
                     'max_ep_len': self.max_ep_len,
-                    'render': self.render
+                    'render': self.render,
+                    'step_time': self.step_time
                 }
                 self.test_logger.start_episode(n, self.robot_number, episode_config)
                 episode_started = True
@@ -74,6 +75,7 @@ class post_train:
             #     self.show_traj = True
 
             action_time_list = []
+            step_start_time = time.time()
 
             if self.render or self.save:
                 self.env.render(save=self.save, path=figure_save_path, i = figure_id, show_traj=self.show_traj, traj_type=self.traj_type)
@@ -102,11 +104,20 @@ class post_train:
             # Get current goals for long-range navigation
             current_goals = self.test_logger.get_current_goals_from_env(self.env)
             
+            step_wall_time = time.time() - step_start_time
+            rl_inference_mean = float(np.mean(action_time_list)) if len(action_time_list) > 0 else 0.0
+            rl_inference_sum = float(np.sum(action_time_list)) if len(action_time_list) > 0 else 0.0
+
             step_info = {
                 'reward': float(r[0]),
                 'done': bool(np.max(d)),
                 'info': info.tolist() if hasattr(info, 'tolist') else info,
-                'current_goals': current_goals
+                'current_goals': current_goals,
+                'timing': {
+                    'step_wall_time': float(step_wall_time),
+                    'rl_inference_mean': float(rl_inference_mean),
+                    'rl_inference_sum': float(rl_inference_sum)
+                }
             }
             self.test_logger.log_step(robot_positions, robot_velocities, step_info)
 

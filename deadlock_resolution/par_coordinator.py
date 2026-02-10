@@ -6,6 +6,7 @@ It handles PAR execution preparation, problem solving, and solution management.
 """
 
 import numpy as np
+import time
 from typing import Dict, List, Tuple, Optional
 from .par_environment import PAREnvironment
 from python_pnr.push_and_rotate import PushAndRotate
@@ -394,7 +395,10 @@ class PARCoordinator:
             }
             
             # Call solver - use same call pattern as standalone test for consistency
+            start_wall = time.time()
             result = self.pnr_solver.start_search(sub_map, mapf_config, solver_actor_set)
+            end_wall = time.time()
+            runtime_wall = float(end_wall - start_wall)
             
             # Store the ID mapping in the result for later use
             result.id_solver_to_real = id_solver_to_real
@@ -454,6 +458,7 @@ class PARCoordinator:
 
                 if hasattr(result, 'runtime'):
                     solution_meta['runtime'] = result.runtime
+                solution_meta['runtime_wall'] = runtime_wall
                 if hasattr(result, 'steps'):
                     solution_meta['steps'] = result.steps
                 if hasattr(result, 'stats'):

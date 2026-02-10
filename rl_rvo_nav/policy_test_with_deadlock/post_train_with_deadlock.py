@@ -70,6 +70,7 @@ class post_train_with_deadlock:
                     'reset_mode': self.reset_mode,
                     'max_ep_len': self.max_ep_len,
                     'render': self.render,
+                    'step_time': self.step_time,
                     'deadlock_resolution_enabled': self.env.is_in_deadlock_resolution_mode()
                 }
                 self.test_logger.start_episode(n, self.robot_number, episode_config)
@@ -79,7 +80,8 @@ class post_train_with_deadlock:
                     self.env.ir_gym.deadlock_logger.log_episode_start(n, self.robot_number, {
                         'max_ep_len': self.max_ep_len,
                         'reset_mode': self.reset_mode,
-                        'render': self.render
+                        'render': self.render,
+                        'step_time': self.step_time
                     })
                 
                 episode_started = True
@@ -88,6 +90,7 @@ class post_train_with_deadlock:
             #     self.show_traj = True
 
             action_time_list = []
+            step_start_time = time.time()
 
             if self.render or self.save:
                 self.env.render(save=self.save, path=figure_save_path, i = figure_id, show_traj=self.show_traj, traj_type=self.traj_type)
@@ -124,12 +127,27 @@ class post_train_with_deadlock:
             robot_positions = self.test_logger.get_robot_positions_from_env(self.env)
             robot_velocities = self.test_logger.get_robot_velocities_from_env(self.env)
             agent_modes = self.test_logger.get_agent_modes_from_env(self.env)
+            step_wall_time = time.time() - step_start_time
+            rl_inference_mean = float(np.mean(action_time_list)) if len(action_time_list) > 0 else 0.0
+            rl_inference_sum = float(np.sum(action_time_list)) if len(action_time_list) > 0 else 0.0
+            deadlock_timing = {}
+            try:
+                deadlock_timing = getattr(self.env.ir_gym, "_last_step_timing", {}) or {}
+            except Exception:
+                deadlock_timing = {}
             step_info = {
                 'reward': float(r[0]),
                 'done': bool(np.max(d)),
                 'info': info.tolist() if hasattr(info, 'tolist') else info,
                 'deadlock_stats': self.deadlock_stats.copy(),
-                'agent_modes': agent_modes
+                'agent_modes': agent_modes,
+                'timing': {
+                    'step_wall_time': float(step_wall_time),
+                    'rl_inference_mean': float(rl_inference_mean),
+                    'rl_inference_sum': float(rl_inference_sum),
+                    'deadlock_check_time': float(deadlock_timing.get("deadlock_check_time", 0.0)) if isinstance(deadlock_timing, dict) else 0.0,
+                    'mapf_solve_time': float(deadlock_timing.get("mapf_solve_time", 0.0)) if isinstance(deadlock_timing, dict) else 0.0
+                }
             }
             self.test_logger.log_step(robot_positions, robot_velocities, step_info)
 

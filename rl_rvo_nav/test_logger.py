@@ -90,6 +90,7 @@ class TestLogger:
             "episode_id": episode_id,
             "robot_number": robot_number,
             "start_time": datetime.now().isoformat(),
+            "start_time_epoch": time.time(),
             "start_positions": start_positions,
             "goal_positions": goal_positions,
             "steps": [],
@@ -154,8 +155,16 @@ class TestLogger:
             return
         
         # Add episode summary
+        end_time_epoch = time.time()
+        start_time_epoch = self.current_episode_data.get("start_time_epoch", None)
+        episode_wall_time = None
+        if isinstance(start_time_epoch, (int, float)):
+            episode_wall_time = float(end_time_epoch - start_time_epoch)
+
         self.current_episode_data.update({
             "end_time": datetime.now().isoformat(),
+            "end_time_epoch": end_time_epoch,
+            "episode_wall_time": episode_wall_time,
             "success": success,
             "episode_reward": episode_reward,
             "episode_length": episode_length,
@@ -261,6 +270,136 @@ class TestLogger:
                 "collision_par_par_episodes": par_par_collision_eps,
                 "collision_agent_obstacle_episodes": any_agent_obstacle_eps
             }
+
+            def _safe_stats(values):
+                if not values:
+                    return {"count": 0, "mean": 0.0, "median": 0.0, "p95": 0.0}
+                arr = np.array(values, dtype=float)
+                return {
+                    "count": int(arr.size),
+                    "mean": float(np.mean(arr)),
+                    "median": float(np.median(arr)),
+                    "p95": float(np.percentile(arr, 95))
+                }
+
+            nav_episode_metrics = []
+            travel_times_all = []
+            path_lengths_all = []
+            avg_speeds_all = []
+
+            step_wall_times = []
+            rl_inference_means = []
+            rl_inference_sums = []
+            deadlock_check_times = []
+            mapf_solve_times = []
+            episode_wall_times = []
+
+            for ep in episodes:
+                steps = ep.get("steps", []) or []
+                robot_number = int(ep.get("robot_number", 0) or 0)
+                step_time = 1.0
+                try:
+                    step_time = float(ep.get("config", {}).get("step_time", 1.0))
+                except Exception:
+                    step_time = 1.0
+
+                if isinstance(ep.get("episode_wall_time", None), (int, float)):
+                    episode_wall_times.append(float(ep.get("episode_wall_time")))
+
+                arrival_steps = [None for _ in range(robot_number)]
+                path_lengths = [0.0 for _ in range(robot_number)]
+                prev_positions = None
+
+                for step in steps:
+                    positions = step.get("robot_positions", []) or []
+                    if prev_positions is not None and positions:
+                        count = min(len(prev_positions), len(positions), robot_number)
+                        for i in range(count):
+                            dx = float(positions[i][0]) - float(prev_positions[i][0])
+                            dy = float(positions[i][1]) - float(prev_positions[i][1])
+                            path_lengths[i] += (dx * dx + dy * dy) ** 0.5
+                    prev_positions = positions if positions else prev_positions
+
+                    step_info = step.get("additional_info", {}) if isinstance(step.get("additional_info", {}), dict) else {}
+                    info = step_info.get("info", None)
+                    if isinstance(info, list):
+                        for i, item in enumerate(info):
+                            if i >= robot_number:
+                                break
+                            if arrival_steps[i] is None and isinstance(item, dict) and bool(item.get("done", False)):
+                                arrival_steps[i] = int(step.get("step", 0))
+
+                    timing = step_info.get("timing", {}) if isinstance(step_info, dict) else {}
+                    if isinstance(timing, dict):
+                        if isinstance(timing.get("step_wall_time"), (int, float)):
+                            step_wall_times.append(float(timing.get("step_wall_time")))
+                        if isinstance(timing.get("rl_inference_mean"), (int, float)):
+                            rl_inference_means.append(float(timing.get("rl_inference_mean")))
+                        if isinstance(timing.get("rl_inference_sum"), (int, float)):
+                            rl_inference_sums.append(float(timing.get("rl_inference_sum")))
+                        if isinstance(timing.get("deadlock_check_time"), (int, float)):
+                            deadlock_check_times.append(float(timing.get("deadlock_check_time")))
+                        if isinstance(timing.get("mapf_solve_time"), (int, float)):
+                            mapf_solve_times.append(float(timing.get("mapf_solve_time")))
+
+                travel_times = []
+                for i in range(robot_number):
+                    if arrival_steps[i] is not None:
+                        travel_time = (arrival_steps[i] + 1) * step_time
+                    else:
+                        travel_time = len(steps) * step_time
+                    travel_times.append(float(travel_time))
+                    travel_times_all.append(float(travel_time))
+                    path_lengths_all.append(float(path_lengths[i]))
+                    avg_speed = float(path_lengths[i]) / float(travel_time) if travel_time > 0 else 0.0
+                    avg_speeds_all.append(avg_speed)
+
+                makespan = max(travel_times) if travel_times else 0.0
+                flowtime = sum(travel_times)
+                avg_travel_time = (flowtime / len(travel_times)) if travel_times else 0.0
+                avg_path_length = float(np.mean(path_lengths)) if path_lengths else 0.0
+                avg_speed = float(np.mean([pl / tt if tt > 0 else 0.0 for pl, tt in zip(path_lengths, travel_times)])) if travel_times else 0.0
+
+                nav_episode_metrics.append({
+                    "makespan": makespan,
+                    "flowtime": flowtime,
+                    "avg_travel_time": avg_travel_time,
+                    "avg_path_length": avg_path_length,
+                    "avg_speed": avg_speed
+                })
+
+            nav_summary = {
+                "makespan_mean": float(np.mean([m["makespan"] for m in nav_episode_metrics])) if nav_episode_metrics else 0.0,
+                "flowtime_mean": float(np.mean([m["flowtime"] for m in nav_episode_metrics])) if nav_episode_metrics else 0.0,
+                "avg_travel_time_mean": float(np.mean([m["avg_travel_time"] for m in nav_episode_metrics])) if nav_episode_metrics else 0.0,
+                "avg_path_length_mean": float(np.mean([m["avg_path_length"] for m in nav_episode_metrics])) if nav_episode_metrics else 0.0,
+                "avg_speed_mean": float(np.mean([m["avg_speed"] for m in nav_episode_metrics])) if nav_episode_metrics else 0.0
+            }
+
+            runtime_summary = {
+                "step_wall_time": _safe_stats(step_wall_times),
+                "rl_inference_mean": _safe_stats(rl_inference_means),
+                "rl_inference_sum": _safe_stats(rl_inference_sums),
+                "deadlock_check_time": _safe_stats(deadlock_check_times),
+                "mapf_solve_time": _safe_stats([v for v in mapf_solve_times if v > 0.0]),
+                "episode_wall_time": _safe_stats(episode_wall_times)
+            }
+
+            deadlock_summary = {}
+            try:
+                if self.env is not None and hasattr(self.env, 'ir_gym'):
+                    logger = getattr(self.env.ir_gym, 'deadlock_logger', None)
+                    if logger and hasattr(logger, 'get_session_metrics'):
+                        deadlock_summary = logger.get_session_metrics()
+            except Exception:
+                deadlock_summary = {}
+
+            metrics_summary = {
+                "navigation": nav_summary,
+                "runtime": runtime_summary,
+                "deadlock": deadlock_summary
+            }
+            self.session_metadata["metrics"] = metrics_summary
         
         # Save session summary
         summary_file = self.session_dir / "session_summary.json"
@@ -272,6 +411,13 @@ class TestLogger:
             stats_file = self.session_dir / "session_stats.json"
             with open(stats_file, 'w') as f:
                 json.dump(session_stats, f, indent=2)
+        except Exception:
+            pass
+
+        try:
+            metrics_file = self.session_dir / "metrics_summary.json"
+            with open(metrics_file, 'w') as f:
+                json.dump(self.session_metadata.get("metrics", {}), f, indent=2)
         except Exception:
             pass
         

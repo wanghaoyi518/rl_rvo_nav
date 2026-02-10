@@ -5,6 +5,7 @@ from gym_env.envs.rvo_inter import rvo_inter
 import numpy as np
 import sys
 import os
+import time
 
 # Add the rl_rvo_nav directory to the path for imports
 rl_rvo_nav_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'rl_rvo_nav')
@@ -682,6 +683,11 @@ class ir_gym(env_base):
         """Execute step with deadlock resolution logic."""
         if not self.enable_deadlock_resolution:
             return self._step_pure_rl(action_list)
+
+        step_timing = {
+            "deadlock_check_time": 0.0,
+            "mapf_solve_time": 0.0
+        }
         
         # Increment step counter
         if hasattr(self, 'step_count'):
@@ -717,15 +723,25 @@ class ir_gym(env_base):
                 print(f"DEBUG: Agent {agent_id} in rl_rvo mode, checking deadlock")
                 # Check if should switch to PAR mode
                 agent_neighbor_states = self._get_agent_neighbor_states(agent_id, agent_states, neighbor_states)
-                if self.deadlock_detector.detect_deadlock(agent_id, agent_states, agent_neighbor_states):
+                check_start = time.time()
+                detected = self.deadlock_detector.detect_deadlock(agent_id, agent_states, agent_neighbor_states)
+                step_timing["deadlock_check_time"] += time.time() - check_start
+                if detected:
                     print(f"DEBUG: Agent {agent_id} triggered deadlock detection")
                     deadlock_participants = self.deadlock_detector.get_deadlock_participants(agent_id, agent_states, agent_neighbor_states)
                     print(f"DEBUG: Agent {agent_id} deadlock participants: {deadlock_participants}")
+                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                        try:
+                            self.deadlock_logger.log_deadlock_participants(agent_id, deadlock_participants)
+                        except Exception:
+                            pass
                                         
                     # Proceed if we have at least one participant (single-agent fallback supported)
                     if len(deadlock_participants) >= 1:
                         try:
+                            mapf_start = time.time()
                             par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
+                            step_timing["mapf_solve_time"] += time.time() - mapf_start
                             
                             # Validate solution per participant: require non-empty path or already at goal
                             valid_participants = []
@@ -1176,10 +1192,15 @@ class ir_gym(env_base):
         except Exception:
             pass
 
+        self._last_step_timing = step_timing
         return obs_list, reward_list, done_list, info_list
     
     def _step_pure_rl(self, action_list):
         """Execute step with pure RL logic (original behavior)."""
+        self._last_step_timing = {
+            "deadlock_check_time": 0.0,
+            "mapf_solve_time": 0.0
+        }
         # Enforce boundary constraints before robot movement
         action_list = self._enforce_boundaries(action_list)
         

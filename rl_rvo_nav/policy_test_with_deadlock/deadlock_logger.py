@@ -103,6 +103,7 @@ class DeadlockLogger:
             'agent_states': {},
             'episode_deadlock_count': 0  # Add episode-level deadlock counter
         }
+        self.session_summaries = []
         
         self.logger.info(f"🔧 Deadlock Logger initialized. Log file: {self.log_file}")
     
@@ -118,7 +119,8 @@ class DeadlockLogger:
             'mode_switches': [],
             'par_executions': [],
             'agent_states': {},
-            'episode_deadlock_count': 0  # Reset episode-level deadlock counter
+            'episode_deadlock_count': 0,  # Reset episode-level deadlock counter
+            'episode_config': config or {}
         }
         
         # self.logger.info(f"🎬 EPISODE START: Episode {episode_num}, Agents: {num_agents}")
@@ -179,6 +181,19 @@ class DeadlockLogger:
         
         self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
         self.logger.debug(f"   Details: {json.dumps(serializable_details, indent=2)}")
+
+    def log_deadlock_participants(self, agent_id: int, participants: List[int]):
+        """Log deadlock participant list."""
+        event = {
+            'step': self.stats['step'],
+            'agent_id': agent_id,
+            'participants': participants,
+            'count': len(participants),
+            'timestamp': datetime.now().isoformat()
+        }
+        if 'deadlock_participants' not in self.episode_data:
+            self.episode_data['deadlock_participants'] = []
+        self.episode_data['deadlock_participants'].append(event)
     
     def log_deadlock_check(self, agent_id: int, velocity: float, threshold: float, neighbor_count: int):
         """Log deadlock check details."""
@@ -310,6 +325,93 @@ class DeadlockLogger:
             'par_failures': self.stats['par_failures'],
             'success_rate': self.stats['par_successes'] / max(self.stats['par_executions'], 1)
         }
+
+        deadlock_events = self.episode_data.get('deadlock_events', []) or []
+        mode_switches = self.episode_data.get('mode_switches', []) or []
+        par_execs = self.episode_data.get('par_executions', []) or []
+        participants_events = self.episode_data.get('deadlock_participants', []) or []
+        episode_cfg = self.episode_data.get('episode_config', {}) or {}
+        try:
+            step_time = float(episode_cfg.get('step_time', 1.0))
+        except Exception:
+            step_time = 1.0
+
+        detections_by_agent = {}
+        for e in deadlock_events:
+            aid = e.get('agent_id', None)
+            if aid is None:
+                continue
+            detections_by_agent[aid] = detections_by_agent.get(aid, 0) + 1
+
+        participants_hist = {}
+        for e in participants_events:
+            cnt = int(e.get('count', 0))
+            participants_hist[cnt] = participants_hist.get(cnt, 0) + 1
+
+        resolution_steps = []
+        for e in deadlock_events:
+            aid = e.get('agent_id', None)
+            det_step = e.get('step', None)
+            if aid is None or det_step is None:
+                continue
+            for sw in mode_switches:
+                if sw.get('agent_id', None) != aid:
+                    continue
+                if sw.get('new_mode', '') != 'rl_rvo':
+                    continue
+                sw_step = sw.get('step', None)
+                if sw_step is None:
+                    continue
+                if int(sw_step) >= int(det_step):
+                    resolution_steps.append(int(sw_step) - int(det_step))
+                    break
+        resolution_seconds = [float(s) * step_time for s in resolution_steps]
+
+        par_successes = 0
+        par_failures = 0
+        for e in par_execs:
+            status = e.get('status', '')
+            if status == 'success':
+                par_successes += 1
+            elif status == 'failure':
+                par_failures += 1
+        par_executions = len(par_execs)
+        par_success_rate = float(par_successes) / float(par_executions) if par_executions > 0 else 0.0
+
+        mapf_runtime_samples = []
+        for detail in self.episode_data.get('par_solver_details', []) or []:
+            meta = detail.get('solution', {}).get('meta', {}) if isinstance(detail, dict) else {}
+            if isinstance(meta, dict):
+                if isinstance(meta.get('runtime_wall'), (int, float)):
+                    mapf_runtime_samples.append(float(meta.get('runtime_wall')))
+                elif isinstance(meta.get('runtime'), (int, float)):
+                    mapf_runtime_samples.append(float(meta.get('runtime')))
+
+        def _stats(values):
+            if not values:
+                return {"count": 0, "mean": 0.0, "median": 0.0, "p95": 0.0}
+            arr = np.array(values, dtype=float)
+            return {
+                "count": int(arr.size),
+                "mean": float(np.mean(arr)),
+                "median": float(np.median(arr)),
+                "p95": float(np.percentile(arr, 95))
+            }
+
+        summary.update({
+            "deadlock_events_total": len(deadlock_events),
+            "deadlock_events_per_agent": detections_by_agent,
+            "deadlock_participants_hist": participants_hist,
+            "resolution_time_sec_samples": resolution_seconds,
+            "resolution_time_sec_stats": _stats(resolution_seconds),
+            "par_executions": par_executions,
+            "par_successes": par_successes,
+            "par_failures": par_failures,
+            "par_success_rate": par_success_rate,
+            "mapf_runtime_sec_samples": mapf_runtime_samples,
+            "mapf_runtime_sec_stats": _stats(mapf_runtime_samples)
+        })
+        self.session_summaries.append(summary)
         
         # self.logger.info(f"📈 EPISODE SUMMARY: {json.dumps(summary, indent=2)}")
         
@@ -319,6 +421,57 @@ class DeadlockLogger:
             self.logger.debug(f"📋 EPISODE DETAILS: {json.dumps(serializable_episode_data, indent=2)}")
         except Exception as e:
             self.logger.debug(f"📋 EPISODE DETAILS: [Serialization failed: {str(e)}]")
+
+    def get_session_metrics(self) -> Dict:
+        """Aggregate session-level deadlock and MAPF metrics."""
+        summaries = self.session_summaries or []
+        if not summaries:
+            return {}
+
+        total_episodes = len(summaries)
+        episodes_with_deadlock = sum(1 for s in summaries if s.get("deadlock_events_total", 0) > 0)
+        total_deadlock_events = sum(int(s.get("deadlock_events_total", 0) or 0) for s in summaries)
+
+        all_resolution_samples = []
+        all_mapf_runtime_samples = []
+        participants_hist = {}
+
+        total_par_exec = 0
+        total_par_success = 0
+        total_par_fail = 0
+
+        for s in summaries:
+            all_resolution_samples.extend(s.get("resolution_time_sec_samples", []) or [])
+            all_mapf_runtime_samples.extend(s.get("mapf_runtime_sec_samples", []) or [])
+            hist = s.get("deadlock_participants_hist", {}) or {}
+            for k, v in hist.items():
+                participants_hist[int(k)] = participants_hist.get(int(k), 0) + int(v)
+            total_par_exec += int(s.get("par_executions", 0) or 0)
+            total_par_success += int(s.get("par_successes", 0) or 0)
+            total_par_fail += int(s.get("par_failures", 0) or 0)
+
+        def _stats(values):
+            if not values:
+                return {"count": 0, "mean": 0.0, "median": 0.0, "p95": 0.0}
+            arr = np.array(values, dtype=float)
+            return {
+                "count": int(arr.size),
+                "mean": float(np.mean(arr)),
+                "median": float(np.median(arr)),
+                "p95": float(np.percentile(arr, 95))
+            }
+
+        return {
+            "deadlock_episode_rate": float(episodes_with_deadlock) / float(total_episodes),
+            "deadlock_events_per_episode": float(total_deadlock_events) / float(total_episodes),
+            "deadlock_participants_hist": participants_hist,
+            "resolution_time_sec": _stats(all_resolution_samples),
+            "mapf_runtime_sec": _stats(all_mapf_runtime_samples),
+            "par_success_rate": float(total_par_success) / float(total_par_exec) if total_par_exec > 0 else 0.0,
+            "par_executions": total_par_exec,
+            "par_successes": total_par_success,
+            "par_failures": total_par_fail
+        }
     
     def get_stats(self) -> Dict:
         """Get current statistics."""
