@@ -241,7 +241,7 @@ class ir_gym(env_base):
                     current_goals = []
                     for aid, robot in enumerate(self.robot_list):
                         mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                        if mode == 'par':
+                        if mode == 'mapf':
                             if hasattr(robot, 'goal') and robot.goal is not None:
                                 current_goals.append([float(robot.goal[0]), float(robot.goal[1])])
                             else:
@@ -297,7 +297,7 @@ class ir_gym(env_base):
                 exclude_par_neighbors = bool(self.deadlock_config.get('EXCLUDE_PAR_NEIGHBORS_IN_RVO', True)) if self.deadlock_config else True
             except Exception:
                 exclude_par_neighbors = True
-            nei_used = [] if (current_mode == 'par' and exclude_par_neighbors) else nei_state_list
+            nei_used = [] if (current_mode == 'mapf' and exclude_par_neighbors) else nei_state_list
         except Exception:
             nei_used = nei_state_list
         obs_vo_list, vo_flag, min_exp_time, collision_flag = self.rvo.config_vo_inf(robot_omni_state, nei_used, obs_circular_list, combined_lines, action, **kwargs)
@@ -374,7 +374,7 @@ class ir_gym(env_base):
                 exclude_par_neighbors = bool(self.deadlock_config.get('EXCLUDE_PAR_NEIGHBORS_IN_RVO', True)) if self.deadlock_config else True
             except Exception:
                 exclude_par_neighbors = True
-            nei_used_obs = [] if (mode_obs == 'par' and exclude_par_neighbors) else nei_state_list
+            nei_used_obs = [] if (mode_obs == 'mapf' and exclude_par_neighbors) else nei_state_list
         except Exception:
             nei_used_obs = nei_state_list
         obs_vo_list, _, min_exp_time, _ = self.rvo.config_vo_inf(robot_omni_state, nei_used_obs, obs_circular_list, combined_lines)
@@ -605,10 +605,12 @@ class ir_gym(env_base):
             from mode_management.state_manager import StateManager
             from deadlock_resolution.par_coordinator import PARCoordinator
             from deadlock_resolution.par_executor import PARExecutor
+            from deadlock_resolution.cbs_coordinator import CBSCoordinator
             from python_pnr.push_and_rotate import PushAndRotate
             
-            # Initialize configuration
-            self.deadlock_config = DeadlockConfig()
+            # Initialize configuration only if not already set (preserve config loaded in enable_deadlock_resolution_mode)
+            if self.deadlock_config is None:
+                self.deadlock_config = DeadlockConfig()
             
             # Initialize PNR solver
             pnr_solver = PushAndRotate()
@@ -636,7 +638,23 @@ class ir_gym(env_base):
                 self.par_coordinator.set_logger(self.deadlock_logger)
             elif hasattr(self.par_coordinator, 'logger'):
                 self.par_coordinator.logger = self.deadlock_logger
-            
+
+            # Initialize CBS coordinator (optional, controlled by config)
+            try:
+                use_cbs = bool(self.deadlock_config.get('USE_CBS_INSTEAD_OF_PAR', False))
+            except Exception:
+                use_cbs = False
+            self.cbs_coordinator = None
+            if use_cbs:
+                self.cbs_coordinator = CBSCoordinator(self.deadlock_config.config, gym_env=self)
+                if hasattr(self.cbs_coordinator, 'set_logger'):
+                    try:
+                        self.cbs_coordinator.set_logger(self.deadlock_logger)
+                    except Exception:
+                        pass
+            else:
+                self.cbs_coordinator = None
+
             self.par_executor = PARExecutor(self.deadlock_config.config)
             self.state_manager = StateManager()
             self.mode_controller = ModeController(
@@ -656,13 +674,18 @@ class ir_gym(env_base):
             self.enable_deadlock_resolution = False
     
     def enable_deadlock_resolution_mode(self, config_file=None):
-        """Enable deadlock resolution mode for testing."""
+        """Enable deadlock resolution mode for testing.
+        When config_file is provided, always load it and re-init modules so that
+        USE_CBS_INSTEAD_OF_PAR and cbs_coordinator are set correctly (even if
+        enable_deadlock_resolution was already True from gym.make()).
+        """
+        if config_file and self.deadlock_config:
+            self.deadlock_config.load_from_file(config_file)
         if not self.enable_deadlock_resolution:
             self.enable_deadlock_resolution = True
-            if config_file and self.deadlock_config:
-                self.deadlock_config.load_from_file(config_file)
+        if self.enable_deadlock_resolution:
             self._initialize_deadlock_modules()
-            print("Deadlock resolution mode enabled")
+        print("Deadlock resolution mode enabled")
     
     def disable_deadlock_resolution_mode(self):
         """Disable deadlock resolution mode (restore pure RL)."""
@@ -739,10 +762,27 @@ class ir_gym(env_base):
                     # Proceed if we have at least one participant (single-agent fallback supported)
                     if len(deadlock_participants) >= 1:
                         try:
+                            # Decide which MAPF solver to use: PAR (default) or CBS
+                            try:
+                                use_cbs = bool(self.deadlock_config.get('USE_CBS_INSTEAD_OF_PAR', False)) if self.deadlock_config else False
+                            except Exception:
+                                use_cbs = False
+
                             mapf_start = time.time()
-                            par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
+                            par_solution = None
+                            cbs_solution = None
+                            if use_cbs and hasattr(self, 'cbs_coordinator') and self.cbs_coordinator:
+                                cbs_solution = self.cbs_coordinator.prepare_cbs_execution(agent_states, deadlock_participants)
+                            else:
+                                par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
                             step_timing["mapf_solve_time"] += time.time() - mapf_start
-                            
+
+                            # If solver failed, keep RL_RVO mode
+                            if use_cbs and not cbs_solution:
+                                continue
+                            if (not use_cbs) and par_solution is None:
+                                continue
+
                             # Validate solution per participant: require non-empty path or already at goal
                             valid_participants = []
                             tol = 0.5
@@ -752,7 +792,10 @@ class ir_gym(env_base):
                                 tol = 0.5
                             for pid in deadlock_participants:
                                 agent_state = agent_states.get(pid, {})
-                                path = self.par_executor.get_agent_path_from_solution(pid, par_solution) if hasattr(self, 'par_executor') else None
+                                if use_cbs and cbs_solution:
+                                    path = self.cbs_coordinator.get_agent_path(pid)
+                                else:
+                                    path = self.par_executor.get_agent_path_from_solution(pid, par_solution) if hasattr(self, 'par_executor') else None
                                 has_path = bool(path) and len(path) > 0
                                 at_goal = False
                                 if 'position' in agent_state and 'goal' in agent_state and agent_state['goal'] is not None:
@@ -775,7 +818,7 @@ class ir_gym(env_base):
                             if len(valid_participants) < required_count:
                                 continue
                             
-                            # Log PAR preparation with agent positions
+                            # Log MAPF preparation with agent positions
                             if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
                                 # Log agent positions when switching from RL to MAPF
                                 agent_positions = {}
@@ -784,15 +827,29 @@ class ir_gym(env_base):
                                         agent_state = agent_states[participant_id]
                                         if 'position' in agent_state:
                                             agent_positions[participant_id] = agent_state['position']
-                                
-                                self.deadlock_logger.log_par_preparation(agent_id, valid_participants, par_solution)
-                                self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
-                                self.deadlock_logger.log_par_solution_paths(par_solution, valid_participants)
-                            
-                            # Set PAR mode for all valid participants and initialize PAR waypoints
+
+                                try:
+                                    if use_cbs:
+                                        # Reuse existing logger hooks but pass CBS solution summary when possible
+                                        if hasattr(self.deadlock_logger, 'log_par_preparation'):
+                                            self.deadlock_logger.log_par_preparation(agent_id, valid_participants, cbs_solution)
+                                        if hasattr(self.deadlock_logger, 'log_rl_to_mapf_positions'):
+                                            self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
+                                    else:
+                                        self.deadlock_logger.log_par_preparation(agent_id, valid_participants, par_solution)
+                                        self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
+                                        self.deadlock_logger.log_par_solution_paths(par_solution, valid_participants)
+                                except Exception:
+                                    pass
+
+                            # Set PAR (or CBS) mode for all valid participants and initialize MAPF waypoints
                             for participant_id in valid_participants:
                                 old_mode = self.get_current_mode(participant_id)
-                                self.state_manager.set_par_mode(participant_id, par_solution)
+                                # MAPF mode: same waypoint tracking and exit logic for PAR or CBS.
+                                if use_cbs:
+                                    self.state_manager.set_par_mode(participant_id, None)
+                                else:
+                                    self.state_manager.set_par_mode(participant_id, par_solution)
                                 # Record when the agent entered PAR to support per-agent timeout
                                 try:
                                     if hasattr(self, 'step_count') and hasattr(self.state_manager, 'set_mode_switch_time'):
@@ -800,32 +857,40 @@ class ir_gym(env_base):
                                 except Exception:
                                     pass
                                 
-                                # Build PAR waypoints and inject into WaypointManager
-                                grid_path = []
-                                try:
-                                    grid_path = self.par_coordinator.get_agent_path(participant_id)
-                                    print(f"PAR INIT: Agent {participant_id} grid path length: {len(grid_path)}")
-                                    if grid_path:
-                                        print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
-                                except Exception as e:
-                                    print(f"PAR INIT: Failed to get grid path for agent {participant_id}: {e}")
-                                    grid_path = []
-                                
+                                # Build MAPF waypoints and inject into WaypointManager
                                 cont_path = []
-                                if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
-                                    for gp in grid_path:
-                                        try:
-                                            if hasattr(gp, 'x') and hasattr(gp, 'y'):
-                                                grid_coord = (gp.x, gp.y)
-                                            else:
-                                                grid_coord = gp
-                                            cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
-                                            cont_path.append(cont)
-                                        except Exception as e:
-                                            print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
-                                            pass
+                                if use_cbs and cbs_solution:
+                                    try:
+                                        cont_path = self.cbs_coordinator.get_agent_path(participant_id)
+                                        print(f"CBS INIT: Agent {participant_id} path length: {len(cont_path)}")
+                                    except Exception as e:
+                                        print(f"CBS INIT: Failed to get path for agent {participant_id}: {e}")
+                                        cont_path = []
                                 else:
-                                    print(f"PAR INIT: Cannot convert path for agent {participant_id} - missing environment or grid_to_continuous method")
+                                    grid_path = []
+                                    try:
+                                        grid_path = self.par_coordinator.get_agent_path(participant_id)
+                                        print(f"PAR INIT: Agent {participant_id} grid path length: {len(grid_path)}")
+                                        if grid_path:
+                                            print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
+                                    except Exception as e:
+                                        print(f"PAR INIT: Failed to get grid path for agent {participant_id}: {e}")
+                                        grid_path = []
+
+                                    if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
+                                        for gp in grid_path:
+                                            try:
+                                                if hasattr(gp, 'x') and hasattr(gp, 'y'):
+                                                    grid_coord = (gp.x, gp.y)
+                                                else:
+                                                    grid_coord = gp
+                                                cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
+                                                cont_path.append(cont)
+                                            except Exception as e:
+                                                print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
+                                                pass
+                                    else:
+                                        print(f"PAR INIT: Cannot convert path for agent {participant_id} - missing environment or grid_to_continuous method")
                                 
                                 # Inject as waypoints if available
                                 if cont_path and isinstance(self._waypoint_managers, dict):
@@ -868,7 +933,18 @@ class ir_gym(env_base):
                                 
                                 # Log mode switch
                                 if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                                    self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'par', f"Deadlock detected by agent {agent_id}")
+                                    try:
+                                        self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'mapf', f"Deadlock detected by agent {agent_id} ({'CBS' if use_cbs else 'PAR'} solver)")
+                                    except Exception:
+                                        pass
+
+                            # Log MAPF execution for metrics (PAR vs CBS)
+                            if hasattr(self, 'deadlock_logger') and self.deadlock_logger and valid_participants:
+                                try:
+                                    solver_type = 'cbs' if use_cbs else 'par'
+                                    self.deadlock_logger.log_mapf_execution(solver_type, valid_participants, 'success')
+                                except Exception:
+                                    pass
                             
                             # print(f"🔴 DEADLOCK DETECTED: Agent {agent_id} triggered deadlock resolution, switching {len(deadlock_participants)} agents to PAR mode")
                             # print(f"   Participants: {deadlock_participants}")
@@ -913,7 +989,7 @@ class ir_gym(env_base):
                             except Exception:
                                 pass
                         # PAR quick diagnostics: print per-step tracking status
-                        if mode == 'par':
+                        if mode == 'mapf':
                             try:
                                 import numpy as np
                                 des_vec = np.squeeze(robot.cal_des_vel_omni())
@@ -956,14 +1032,14 @@ class ir_gym(env_base):
                 par_active_count = 0
                 for _aid in range(len(modified_action_list)):
                     _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                    if _mode == 'par':
+                    if _mode == 'mapf':
                         par_active_count += 1
                 is_single_par = (par_active_count == 1)
             except Exception:
                 is_single_par = False
             for aid2 in range(len(modified_action_list)):
                 mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                if mode2 != 'par':
+                if mode2 != 'mapf':
                     continue
                 act = modified_action_list[aid2]
                 if act is None:
@@ -1012,7 +1088,7 @@ class ir_gym(env_base):
                     for _aid in range(len(self.robot_list)):
                         try:
                             _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                            if _mode == 'par':
+                            if _mode == 'mapf':
                                 par_ids.append(_aid)
                                 rbt = self.robot_list[_aid]
                                 px = float(rbt.state[0, 0]) if hasattr(rbt, 'state') else 0.0
@@ -1034,7 +1110,7 @@ class ir_gym(env_base):
                                 _mode = self.get_current_mode(_aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
                             except Exception:
                                 _mode = 'rl_rvo'
-                            if _mode == 'par':
+                            if _mode == 'mapf':
                                 continue
                             act = modified_action_list[_aid]
                             if act is None:
@@ -1091,8 +1167,8 @@ class ir_gym(env_base):
                 current_goals = []
                 for aid, robot in enumerate(self.robot_list):
                     mode = self.get_current_mode(aid) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                    if mode == 'par':
-                        # In PAR mode, keep current goal and mark not done here (PAR handles completion)
+                    if mode == 'mapf':
+                        # In MAPF mode, keep current goal and mark not done here (MAPF handles completion)
                         if hasattr(robot, 'goal') and robot.goal is not None:
                             current_goals.append([float(robot.goal[0]), float(robot.goal[1])])
                         else:
@@ -1129,7 +1205,7 @@ class ir_gym(env_base):
             current_par_agents = []
             for aid2 in range(len(self.robot_list)):
                 mode2 = self.get_current_mode(aid2) if hasattr(self, 'get_current_mode') else 'rl_rvo'
-                if mode2 == 'par':
+                if mode2 == 'mapf':
                     current_par_agents.append(aid2)
             if len(current_par_agents) > 0 and isinstance(self._waypoint_managers, dict):
                 # Read timeout config with safe defaults
@@ -1170,7 +1246,7 @@ class ir_gym(env_base):
                         if not completed and not timed_out and not stay_fail:
                             continue
                         # Perform per-agent exit
-                        old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'par'
+                        old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'mapf'
                         self.state_manager.set_rl_rvo_mode(pid)
                         # Restore original LR waypoint manager if saved
                         try:
@@ -1295,7 +1371,7 @@ class ir_gym(env_base):
                     if exclude_par_in_pipeline and hasattr(self, 'get_current_mode'):
                         m_a = self.get_current_mode(agent_id)
                         m_b = self.get_current_mode(other_id)
-                        if m_a == 'par' and m_b == 'par':
+                        if m_a == 'mapf' and m_b == 'mapf':
                             continue
                 except Exception:
                     pass

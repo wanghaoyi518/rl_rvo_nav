@@ -34,23 +34,22 @@ class rnn_ac(nn.Module):
     activation=nn.ReLU, output_activation=nn.Tanh, output_activation_v= nn.Identity, use_gpu=False, rnn_mode='GRU', drop_p=0):
         super().__init__()
 
-        self.use_gpu = bool(use_gpu and torch.cuda.is_available())
-        if self.use_gpu:
-            torch.cuda.synchronize()
+        self.use_gpu = use_gpu
+        torch.cuda.synchronize()
         
         if rnn_mode == 'biGRU':
             obs_dim = (rnn_hidden_dim + state_dim)
         elif rnn_mode == 'GRU' or 'LSTM':
             obs_dim = (rnn_hidden_dim + state_dim)
 
-        rnn = rnn_Reader(state_dim, rnn_input_dim, rnn_hidden_dim, use_gpu=self.use_gpu, mode=rnn_mode)
+        rnn = rnn_Reader(state_dim, rnn_input_dim, rnn_hidden_dim, use_gpu=use_gpu, mode=rnn_mode)
 
         # policy builder depends on action space
         if isinstance(action_space, Box):
-            self.pi = GaussianActor(obs_dim, action_space.shape[0], hidden_sizes_ac, activation, output_activation, rnn_reader=rnn, use_gpu=self.use_gpu)
+            self.pi = GaussianActor(obs_dim, action_space.shape[0], hidden_sizes_ac, activation, output_activation, rnn_reader=rnn, use_gpu=use_gpu)
 
         # build value function
-        self.v = Critic(obs_dim, hidden_sizes_v, activation, output_activation_v, rnn_reader=rnn, use_gpu=self.use_gpu)
+        self.v = Critic(obs_dim, hidden_sizes_v, activation, output_activation_v, rnn_reader=rnn, use_gpu=use_gpu)
 
 
     def step(self, obs, std_factor=1):

@@ -14,6 +14,7 @@ setup(
         'gym==0.23.1',
         'Pathlib',
         'mpi4py',
+        'cbs-mapf',
     ],
     description="source code of the paper",
     author="Han Ruihua",

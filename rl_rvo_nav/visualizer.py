@@ -321,10 +321,10 @@ class TestVisualizer:
                                color=status_color,
                                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
         
-        # Add legend
+        # Add legend (MAPF Agent = agent following MAPF waypoints from PAR or CBS solver)
         legend_elements = [
             patches.Patch(color=self.rl_agent_color, label='RL Agent'),
-            patches.Patch(color=self.par_agent_color, label='PAR Agent'),
+            patches.Patch(color=self.par_agent_color, label='MAPF Agent'),
             patches.Patch(color=self.obstacle_color, label='Obstacle'),
             patches.Patch(color='green', label='Start Position'),
             patches.Patch(color='green', label='Goal Position')
@@ -360,7 +360,7 @@ class TestVisualizer:
                     agent_texts[i].set_position((pos[0], pos[1]))
                     
                     # Set color based on mode
-                    if mode == 'par':
+                    if mode == 'mapf':
                         agent_circles[i].set_color(self.par_agent_color)
                     else:
                         agent_circles[i].set_color(self.rl_agent_color)

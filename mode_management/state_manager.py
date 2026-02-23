@@ -45,11 +45,11 @@ class StateManager:
     
     def set_par_mode(self, agent_id: int, par_solution=None, start_position=None, goal_position=None):
         """
-        Set an agent to PAR mode.
+        Set an agent to MAPF mode (following MAPF waypoints from PAR or CBS solver).
         
         Args:
             agent_id: ID of the agent
-            par_solution: PAR solution object
+            par_solution: PAR solution object (None when using CBS)
             start_position: Start position for PAR execution
             goal_position: Goal position for PAR execution
         """
@@ -57,7 +57,7 @@ class StateManager:
             self.agent_states[agent_id] = self.default_state.copy()
         
         self.agent_states[agent_id].update({
-            'mode': 'par',
+            'mode': 'mapf',
             'par_status': {
                 'in_par_mode': True,
                 'move_to_par_pos': True,  # Start by moving to PAR position
@@ -120,7 +120,7 @@ class StateManager:
             agent_id: ID of the agent
             
         Returns:
-            str: Current mode ('rl_rvo' or 'par')
+            str: Current mode ('rl_rvo' or 'mapf')
         """
         if agent_id not in self.agent_states:
             return 'rl_rvo'  # Default mode
@@ -444,7 +444,7 @@ class StateManager:
         Get list of agent IDs that are in a specific mode.
         
         Args:
-            mode: Mode to filter by ('rl_rvo' or 'par')
+            mode: Mode to filter by ('rl_rvo' or 'mapf')
             
         Returns:
             List[int]: List of agent IDs in the specified mode
@@ -456,14 +456,14 @@ class StateManager:
         
         return agent_ids
     
-    def get_agents_in_par_mode(self) -> List[int]:
+    def get_agents_in_mapf_mode(self) -> List[int]:
         """
-        Get list of agent IDs that are in PAR mode.
+        Get list of agent IDs that are in MAPF mode (following MAPF waypoints).
         
         Returns:
-            List[int]: List of agent IDs in PAR mode
+            List[int]: List of agent IDs in MAPF mode
         """
-        return self.get_agents_in_mode('par')
+        return self.get_agents_in_mode('mapf')
     
     def get_agents_in_rl_rvo_mode(self) -> List[int]:
         """
@@ -484,7 +484,7 @@ class StateManager:
         summary = {
             'total_agents': len(self.agent_states),
             'rl_rvo_agents': len(self.get_agents_in_rl_rvo_mode()),
-            'par_agents': len(self.get_agents_in_par_mode()),
+            'mapf_agents': len(self.get_agents_in_mapf_mode()),
             'agent_modes': {}
         }
         

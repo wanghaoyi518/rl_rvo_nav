@@ -46,7 +46,7 @@ class ModeController:
         
         Args:
             agent_id: ID of the agent
-            current_mode: Current mode of the agent ('rl_rvo' or 'par')
+            current_mode: Current mode of the agent ('rl_rvo' or 'mapf')
             agent_states: Dictionary of all agent states
             neighbor_states: Dictionary of neighbor states for the agent
             current_time: Current simulation time step
@@ -61,8 +61,8 @@ class ModeController:
         # Determine if mode should be switched
         if current_mode == 'rl_rvo':
             if self.should_switch_to_par(agent_id, agent_states, neighbor_states):
-                return 'par'
-        elif current_mode == 'par':
+                return 'mapf'
+        elif current_mode == 'mapf':
             if self.should_switch_to_rl_rvo(agent_id, agent_states):
                 return 'rl_rvo'
         
@@ -324,14 +324,14 @@ class ModeController:
         if current_mode == target_mode:
             return {'action': 'none', 'mode': current_mode}
         
-        if current_mode == 'rl_rvo' and target_mode == 'par':
+        if current_mode == 'rl_rvo' and target_mode == 'mapf':
             return {
-                'action': 'switch_to_par',
-                'mode': 'par',
-                'description': 'Switching to PAR mode for deadlock resolution'
+                'action': 'switch_to_mapf',
+                'mode': 'mapf',
+                'description': 'Switching to MAPF mode for deadlock resolution'
             }
         
-        elif current_mode == 'par' and target_mode == 'rl_rvo':
+        elif current_mode == 'mapf' and target_mode == 'rl_rvo':
             return {
                 'action': 'switch_to_rl_rvo',
                 'mode': 'rl_rvo',

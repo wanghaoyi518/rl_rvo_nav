@@ -101,6 +101,17 @@ class DeadlockConfig:
             # MAPF solver parameters
             'PAR_MAX_STEPS': 2000,  # Maximum steps for MAPF solver
             'PAR_HEURISTIC_WEIGHT': 0.6,  # Heuristic weight for A* search
+
+            # CBS (Conflict-Based Search) parameters
+            # If True, use CBS instead of PAR as the MAPF solver for deadlock resolution
+            'USE_CBS_INSTEAD_OF_PAR': False,
+            # Robot radius in world units used by CBS (converted to grid cells using GRID_RESOLUTION)
+            # If not set explicitly, CBSCoordinator defaults to GRID_RESOLUTION * 0.5
+            'CBS_ROBOT_RADIUS': 0.25,
+            # High-level CBS max iterations
+            'CBS_MAX_ITER': 200,
+            # Low-level STA* max iterations
+            'CBS_LOW_LEVEL_MAX_ITER': 100,
             
             # Single agent deadlock trigger parameters
             'SINGLE_AGENT_TRIGGER_ENABLED': True,  # Enable single-agent fallback trigger

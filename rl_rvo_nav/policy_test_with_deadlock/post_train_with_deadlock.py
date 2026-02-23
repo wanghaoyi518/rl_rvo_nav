@@ -31,11 +31,12 @@ class post_train_with_deadlock:
         self.nm = neighbor_num
         self.args = args
         
-        # 死锁解决相关统计
+        # deadlock resolution stats (PAR and CBS distinguished)
         self.deadlock_stats = {
             'deadlock_detections': 0,
             'mode_switches': 0,
             'par_executions': 0,
+            'cbs_executions': 0,
             'total_par_time': 0
         }
         
@@ -265,12 +266,13 @@ class post_train_with_deadlock:
                     self.deadlock_stats['deadlock_detections'] = episode_data.get('episode_deadlock_count', 0)
                     # 更新模式切换次数
                     self.deadlock_stats['mode_switches'] = len(episode_data.get('mode_switches', []))
-                    # 更新PAR执行次数
+                    # update PAR and CBS execution counts
                     self.deadlock_stats['par_executions'] = len(episode_data.get('par_executions', []))
+                    self.deadlock_stats['cbs_executions'] = len(episode_data.get('cbs_executions', []))
             
-            # 记录PAR执行时间
+            # record PAR/CBS execution time (optional)
             for i in range(self.robot_number):
-                if self.env.get_current_mode(i) == 'par':
+                if self.env.get_current_mode(i) == 'mapf':
                     # 这里可以添加更详细的PAR执行时间统计
                     pass
 
@@ -279,36 +281,42 @@ class post_train_with_deadlock:
         if not self.env.is_in_deadlock_resolution_mode():
             return ""
         
-        # 尝试从DeadlockLogger获取真实统计
+        # get stats from DeadlockLogger (session_summaries for full session)
         total_deadlock_detections = 0
         total_mode_switches = 0
         total_par_executions = 0
-        
+        total_cbs_executions = 0
+
         if hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
             logger = self.env.ir_gym.deadlock_logger
-            if hasattr(logger, 'episode_data') and logger.episode_data:
-                # 直接从当前episode数据获取统计信息
+            if hasattr(logger, 'get_session_metrics') and callable(logger.get_session_metrics):
+                metrics = logger.get_session_metrics()
+                if metrics:
+                    total_par_executions = int(metrics.get('par_executions', 0) or 0)
+                    total_cbs_executions = int(metrics.get('cbs_executions', 0) or 0)
+                    total_deadlock_detections = int(metrics.get('total_deadlock_events', 0) or 0)
+                    total_mode_switches = int(metrics.get('total_mode_switches', 0) or 0)
+            if (total_par_executions == 0 and total_cbs_executions == 0) and hasattr(logger, 'episode_data') and logger.episode_data:
                 episode_data = logger.episode_data
                 if isinstance(episode_data, dict):
-                    # 从episode_deadlock_count获取死锁检测次数
                     total_deadlock_detections = episode_data.get('episode_deadlock_count', 0)
-                    # 从mode_switches列表长度获取模式切换次数
                     total_mode_switches = len(episode_data.get('mode_switches', []))
-                    # 从par_executions列表长度获取PAR执行次数
                     total_par_executions = len(episode_data.get('par_executions', []))
-        
-        # 如果无法从logger获取，则使用本地统计
+                    total_cbs_executions = len(episode_data.get('cbs_executions', []))
+
         if total_deadlock_detections == 0:
             total_deadlock_detections = self.deadlock_stats['deadlock_detections']
         if total_mode_switches == 0:
             total_mode_switches = self.deadlock_stats['mode_switches']
         if total_par_executions == 0:
             total_par_executions = self.deadlock_stats['par_executions']
-        
+        if total_cbs_executions == 0:
+            total_cbs_executions = self.deadlock_stats.get('cbs_executions', 0)
+
         summary = f" | deadlock_detections: {total_deadlock_detections}"
         summary += f" | mode_switches: {total_mode_switches}"
         summary += f" | par_executions: {total_par_executions}"
-        
+        summary += f" | cbs_executions: {total_cbs_executions}"
         return summary
 
     def load_policy(self, filename, std_factor=1, policy_dict=False):

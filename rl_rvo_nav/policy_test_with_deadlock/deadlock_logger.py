@@ -83,7 +83,7 @@ class DeadlockLogger:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
         
-        # Statistics tracking
+        # Statistics tracking (PAR and CBS are distinguished)
         self.stats = {
             'episode': 0,
             'step': 0,
@@ -92,6 +92,9 @@ class DeadlockLogger:
             'par_executions': 0,
             'par_successes': 0,
             'par_failures': 0,
+            'cbs_executions': 0,
+            'cbs_successes': 0,
+            'cbs_failures': 0,
             'total_agents': 0
         }
         
@@ -100,8 +103,9 @@ class DeadlockLogger:
             'deadlock_events': [],
             'mode_switches': [],
             'par_executions': [],
+            'cbs_executions': [],
             'agent_states': {},
-            'episode_deadlock_count': 0  # Add episode-level deadlock counter
+            'episode_deadlock_count': 0
         }
         self.session_summaries = []
         
@@ -118,8 +122,9 @@ class DeadlockLogger:
             'deadlock_events': [],
             'mode_switches': [],
             'par_executions': [],
+            'cbs_executions': [],
             'agent_states': {},
-            'episode_deadlock_count': 0,  # Reset episode-level deadlock counter
+            'episode_deadlock_count': 0,
             'episode_config': config or {}
         }
         
@@ -231,9 +236,8 @@ class DeadlockLogger:
             self.logger.debug(f"   PAR Solution: [Serialization failed: {str(e)}]")
     
     def log_par_execution(self, agent_id: int, action: np.ndarray, status: str):
-        """Log PAR execution event."""
+        """Log PAR execution event (per-agent step during PAR tracking)."""
         self.stats['par_executions'] += 1
-        
         event = {
             'step': self.stats['step'],
             'agent_id': agent_id,
@@ -242,16 +246,46 @@ class DeadlockLogger:
             'timestamp': datetime.now().isoformat()
         }
         self.episode_data['par_executions'].append(event)
-        
         if status == 'success':
             self.stats['par_successes'] += 1
-            # self.logger.info(f"✅ PAR EXECUTION: Agent {agent_id} executed successfully")
-            pass
         elif status == 'failure':
             self.stats['par_failures'] += 1
-            self.logger.error(f"❌ PAR EXECUTION: Agent {agent_id} failed")
         else:
-            self.logger.debug(f"🔄 PAR EXECUTION: Agent {agent_id} - {status}")
+            self.logger.debug(f"PAR EXECUTION: Agent {agent_id} - {status}")
+
+    def log_mapf_execution(self, solver_type: str, participants: List[int], status: str = 'success'):
+        """Log one MAPF resolution event (PAR or CBS). Called when waypoints are injected after deadlock.
+        solver_type: 'par' or 'cbs'
+        """
+        solver_type = (solver_type or 'par').lower()
+        if solver_type == 'cbs':
+            self.stats['cbs_executions'] += 1
+            if status == 'success':
+                self.stats['cbs_successes'] += 1
+            elif status == 'failure':
+                self.stats['cbs_failures'] += 1
+            event = {
+                'step': self.stats['step'],
+                'solver': 'cbs',
+                'participants': list(participants),
+                'status': status,
+                'timestamp': datetime.now().isoformat()
+            }
+            self.episode_data.setdefault('cbs_executions', []).append(event)
+        else:
+            self.stats['par_executions'] += 1
+            if status == 'success':
+                self.stats['par_successes'] += 1
+            elif status == 'failure':
+                self.stats['par_failures'] += 1
+            event = {
+                'step': self.stats['step'],
+                'solver': 'par',
+                'participants': list(participants),
+                'status': status,
+                'timestamp': datetime.now().isoformat()
+            }
+            self.episode_data['par_executions'].append(event)
     
     def log_par_completion(self, agent_id: int, total_steps: int):
         """Log PAR completion event."""
@@ -378,6 +412,12 @@ class DeadlockLogger:
         par_executions = len(par_execs)
         par_success_rate = float(par_successes) / float(par_executions) if par_executions > 0 else 0.0
 
+        cbs_execs = self.episode_data.get('cbs_executions', []) or []
+        cbs_successes = sum(1 for e in cbs_execs if e.get('status') == 'success')
+        cbs_failures = sum(1 for e in cbs_execs if e.get('status') == 'failure')
+        cbs_executions = len(cbs_execs)
+        cbs_success_rate = float(cbs_successes) / float(cbs_executions) if cbs_executions > 0 else 0.0
+
         mapf_runtime_samples = []
         for detail in self.episode_data.get('par_solver_details', []) or []:
             meta = detail.get('solution', {}).get('meta', {}) if isinstance(detail, dict) else {}
@@ -408,6 +448,10 @@ class DeadlockLogger:
             "par_successes": par_successes,
             "par_failures": par_failures,
             "par_success_rate": par_success_rate,
+            "cbs_executions": cbs_executions,
+            "cbs_successes": cbs_successes,
+            "cbs_failures": cbs_failures,
+            "cbs_success_rate": cbs_success_rate,
             "mapf_runtime_sec_samples": mapf_runtime_samples,
             "mapf_runtime_sec_stats": _stats(mapf_runtime_samples)
         })
@@ -439,6 +483,9 @@ class DeadlockLogger:
         total_par_exec = 0
         total_par_success = 0
         total_par_fail = 0
+        total_cbs_exec = 0
+        total_cbs_success = 0
+        total_cbs_fail = 0
 
         for s in summaries:
             all_resolution_samples.extend(s.get("resolution_time_sec_samples", []) or [])
@@ -449,6 +496,9 @@ class DeadlockLogger:
             total_par_exec += int(s.get("par_executions", 0) or 0)
             total_par_success += int(s.get("par_successes", 0) or 0)
             total_par_fail += int(s.get("par_failures", 0) or 0)
+            total_cbs_exec += int(s.get("cbs_executions", 0) or 0)
+            total_cbs_success += int(s.get("cbs_successes", 0) or 0)
+            total_cbs_fail += int(s.get("cbs_failures", 0) or 0)
 
         def _stats(values):
             if not values:
@@ -461,16 +511,23 @@ class DeadlockLogger:
                 "p95": float(np.percentile(arr, 95))
             }
 
+        total_mode_switches = sum(int(s.get("mode_switches", 0) or 0) for s in summaries)
         return {
             "deadlock_episode_rate": float(episodes_with_deadlock) / float(total_episodes),
             "deadlock_events_per_episode": float(total_deadlock_events) / float(total_episodes),
+            "total_deadlock_events": total_deadlock_events,
+            "total_mode_switches": total_mode_switches,
             "deadlock_participants_hist": participants_hist,
             "resolution_time_sec": _stats(all_resolution_samples),
             "mapf_runtime_sec": _stats(all_mapf_runtime_samples),
             "par_success_rate": float(total_par_success) / float(total_par_exec) if total_par_exec > 0 else 0.0,
             "par_executions": total_par_exec,
             "par_successes": total_par_success,
-            "par_failures": total_par_fail
+            "par_failures": total_par_fail,
+            "cbs_success_rate": float(total_cbs_success) / float(total_cbs_exec) if total_cbs_exec > 0 else 0.0,
+            "cbs_executions": total_cbs_exec,
+            "cbs_successes": total_cbs_success,
+            "cbs_failures": total_cbs_fail
         }
     
     def get_stats(self) -> Dict:

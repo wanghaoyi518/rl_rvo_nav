@@ -246,9 +246,9 @@ class TestLogger:
                     elif rtype == 'robot_robot':
                         m1 = str(r.get('robot_mode', 'rl_rvo')).lower()
                         m2 = str(r.get('other_robot_mode', 'rl_rvo')).lower()
-                        if m1 == 'par' and m2 == 'par':
+                        if m1 == 'mapf' and m2 == 'mapf':
                             ep_par_par = True
-                        elif (m1 == 'par' and m2 != 'par') or (m2 == 'par' and m1 != 'par'):
+                        elif (m1 == 'mapf' and m2 != 'mapf') or (m2 == 'mapf' and m1 != 'mapf'):
                             ep_rl_par = True
                         else:
                             ep_rl_rl = True
@@ -461,7 +461,7 @@ class TestLogger:
             env: Environment object with deadlock resolution capability
             
         Returns:
-            List of agent modes ('rl_rvo' or 'par')
+            List of agent modes ('rl_rvo' or 'mapf')
         """
         modes = []
         if hasattr(env, 'get_current_mode'):
