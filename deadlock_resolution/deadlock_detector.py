@@ -27,7 +27,7 @@ except ImportError:
     except ImportError:
         # If all imports fail, set to None and handle gracefully
         get_deadlock_logger = None
-        print("Warning: Could not import deadlock_logger, logging will be disabled")
+        # print("Warning: Could not import deadlock_logger, logging will be disabled")
 
 
 class DeadlockDetector:

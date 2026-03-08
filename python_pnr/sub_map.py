@@ -9,11 +9,7 @@ class SubMap:
         self.width = len(grid[0]) if self.height > 0 else 0
 
     def in_bounds(self, i, j):
-        result = 0 <= i < self.height and 0 <= j < self.width
-        # DEBUG: Log boundary check failures
-        if not result:
-            print(f"DEBUG SUBMAP: Position ({i}, {j}) out of bounds - map size: {self.width}x{self.height}")
-        return result
+        return 0 <= i < self.height and 0 <= j < self.width
 
     def is_traversable(self, i, j):
         in_bounds_result = self.in_bounds(i, j)

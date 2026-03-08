@@ -9,6 +9,7 @@ import random
 import torch
 
 from rl_rvo_nav.policy_test_with_deadlock.post_train_with_deadlock import post_train_with_deadlock
+from config.deadlock_config import DeadlockConfig
 
 # 设置固定随机种子
 random.seed(42)
@@ -30,8 +31,8 @@ parser.add_argument('--arg_name', default='pre_train')
 parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='8')
-parser.add_argument('--num_episodes', type=int, default='10')
+parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--num_episodes', type=int, default='3')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
@@ -87,8 +88,15 @@ env = gym.make(
     enable_deadlock_resolution=policy_args.enable_deadlock_resolution
 )
 
-if policy_args.enable_deadlock_resolution and policy_args.deadlock_config_file:
-    env.enable_deadlock_resolution_mode(policy_args.deadlock_config_file)
+if policy_args.enable_deadlock_resolution:
+    deadlock_config = DeadlockConfig()
+    deadlock_config.set('DEADLOCK_SOLVER', 'par')
+    deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 2)
+    env.ir_gym.deadlock_config = deadlock_config
+    if policy_args.deadlock_config_file:
+        env.enable_deadlock_resolution_mode(policy_args.deadlock_config_file)
+    else:
+        env.enable_deadlock_resolution_mode()
 
 policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode) + '_mode8_lr_with_deadlock'
 
@@ -105,7 +113,8 @@ pt = post_train_with_deadlock(
     args=args,
     save=policy_args.save,
     show_traj=policy_args.show_traj,
-    figure_format='eps'
+    figure_format='eps',
+    test_type='test_with_par'
 )
 
 pt.policy_test(
@@ -113,9 +122,9 @@ pt.policy_test(
     fname_model,
     policy_name,
     result_path=str(cur_path),
-    result_name='/result_long_range_with_deadlock.txt',
-    figure_save_path=cur_path / 'figure_long_range_with_deadlock',
-    ani_save_path=cur_path / 'gif_long_range_with_deadlock',
+    result_name='/result_long_range_with_par.txt',
+    figure_save_path=cur_path / 'figure_long_range_with_par',
+    ani_save_path=cur_path / 'gif_long_range_with_par',
     policy_dict=policy_args.policy_dict,
     once=policy_args.once
 )

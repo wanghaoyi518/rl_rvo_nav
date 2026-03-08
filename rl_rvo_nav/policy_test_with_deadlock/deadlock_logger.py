@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import json
+import traceback
 import numpy as np
 import math
 import matplotlib
@@ -63,13 +64,13 @@ class DeadlockLogger:
         # Clear any existing handlers
         self.logger.handlers.clear()
         
-        # File handler
+        # File handler: use log_level so file can store DEBUG details
         file_handler = logging.FileHandler(self.log_file, mode='w', encoding='utf-8')
         file_handler.setLevel(getattr(logging, log_level.upper()))
         
-        # Console handler
+        # Console handler: never emit DEBUG/INFO for detailed dumps (episode step data stays in file only)
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.WARNING)
         
         # Formatter
         formatter = logging.Formatter(
@@ -95,6 +96,9 @@ class DeadlockLogger:
             'cbs_executions': 0,
             'cbs_successes': 0,
             'cbs_failures': 0,
+            'rule_based_executions': 0,
+            'rule_based_successes': 0,
+            'rule_based_failures': 0,
             'total_agents': 0
         }
         
@@ -104,10 +108,13 @@ class DeadlockLogger:
             'mode_switches': [],
             'par_executions': [],
             'cbs_executions': [],
+            'rule_based_executions': [],
             'agent_states': {},
             'episode_deadlock_count': 0
         }
         self.session_summaries = []
+        self._cbs_vis_count = 0
+        self._rule_vis_count = 0
         
         self.logger.info(f"🔧 Deadlock Logger initialized. Log file: {self.log_file}")
     
@@ -116,6 +123,8 @@ class DeadlockLogger:
         self.stats['episode'] = episode_num
         self.stats['step'] = 0
         self.stats['total_agents'] = num_agents
+        self._cbs_vis_count = 0
+        self._rule_vis_count = 0
         
         # Reset episode data
         self.episode_data = {
@@ -123,6 +132,7 @@ class DeadlockLogger:
             'mode_switches': [],
             'par_executions': [],
             'cbs_executions': [],
+            'rule_based_executions': [],
             'agent_states': {},
             'episode_deadlock_count': 0,
             'episode_config': config or {}
@@ -184,7 +194,7 @@ class DeadlockLogger:
         }
         self.episode_data['deadlock_events'].append(event)
         
-        self.logger.warning(f"🔴 DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
+        self.logger.debug(f"DEADLOCK DETECTED: Agent {agent_id}, Trigger: {trigger_type}")
         self.logger.debug(f"   Details: {json.dumps(serializable_details, indent=2)}")
 
     def log_deadlock_participants(self, agent_id: int, participants: List[int]):
@@ -228,8 +238,11 @@ class DeadlockLogger:
         # self.logger.info(f"📋 PAR PREPARATION: Agent {agent_id}, Participants: {participants}")
         pass
         
-        # Convert par_solution to serializable format
+        # Convert par_solution to serializable format (skip when it is a CBS coordinator object)
         try:
+            if hasattr(par_solution, 'current_cbs_solution'):
+                self.logger.debug(f"   CBS solution: {len(getattr(par_solution, 'current_participants', []))} participants")
+                return
             serializable_solution = self._convert_to_serializable(par_solution)
             self.logger.debug(f"   PAR Solution: {json.dumps(serializable_solution, indent=2)}")
         except Exception as e:
@@ -254,8 +267,8 @@ class DeadlockLogger:
             self.logger.debug(f"PAR EXECUTION: Agent {agent_id} - {status}")
 
     def log_mapf_execution(self, solver_type: str, participants: List[int], status: str = 'success'):
-        """Log one MAPF resolution event (PAR or CBS). Called when waypoints are injected after deadlock.
-        solver_type: 'par' or 'cbs'
+        """Log one MAPF resolution event (PAR, CBS, or rule_based). Called when waypoints are injected after deadlock.
+        solver_type: 'par', 'cbs', or 'rule_based'
         """
         solver_type = (solver_type or 'par').lower()
         if solver_type == 'cbs':
@@ -272,6 +285,20 @@ class DeadlockLogger:
                 'timestamp': datetime.now().isoformat()
             }
             self.episode_data.setdefault('cbs_executions', []).append(event)
+        elif solver_type == 'rule_based':
+            self.stats['rule_based_executions'] += 1
+            if status == 'success':
+                self.stats['rule_based_successes'] += 1
+            elif status == 'failure':
+                self.stats['rule_based_failures'] += 1
+            event = {
+                'step': self.stats['step'],
+                'solver': 'rule_based',
+                'participants': list(participants),
+                'status': status,
+                'timestamp': datetime.now().isoformat()
+            }
+            self.episode_data.setdefault('rule_based_executions', []).append(event)
         else:
             self.stats['par_executions'] += 1
             if status == 'success':
@@ -418,6 +445,12 @@ class DeadlockLogger:
         cbs_executions = len(cbs_execs)
         cbs_success_rate = float(cbs_successes) / float(cbs_executions) if cbs_executions > 0 else 0.0
 
+        rule_based_execs = self.episode_data.get('rule_based_executions', []) or []
+        rule_based_successes = sum(1 for e in rule_based_execs if e.get('status') == 'success')
+        rule_based_failures = sum(1 for e in rule_based_execs if e.get('status') == 'failure')
+        rule_based_executions = len(rule_based_execs)
+        rule_based_success_rate = float(rule_based_successes) / float(rule_based_executions) if rule_based_executions > 0 else 0.0
+
         mapf_runtime_samples = []
         for detail in self.episode_data.get('par_solver_details', []) or []:
             meta = detail.get('solution', {}).get('meta', {}) if isinstance(detail, dict) else {}
@@ -452,6 +485,10 @@ class DeadlockLogger:
             "cbs_successes": cbs_successes,
             "cbs_failures": cbs_failures,
             "cbs_success_rate": cbs_success_rate,
+            "rule_based_executions": rule_based_executions,
+            "rule_based_successes": rule_based_successes,
+            "rule_based_failures": rule_based_failures,
+            "rule_based_success_rate": rule_based_success_rate,
             "mapf_runtime_sec_samples": mapf_runtime_samples,
             "mapf_runtime_sec_stats": _stats(mapf_runtime_samples)
         })
@@ -486,6 +523,9 @@ class DeadlockLogger:
         total_cbs_exec = 0
         total_cbs_success = 0
         total_cbs_fail = 0
+        total_rule_based_exec = 0
+        total_rule_based_success = 0
+        total_rule_based_fail = 0
 
         for s in summaries:
             all_resolution_samples.extend(s.get("resolution_time_sec_samples", []) or [])
@@ -499,6 +539,9 @@ class DeadlockLogger:
             total_cbs_exec += int(s.get("cbs_executions", 0) or 0)
             total_cbs_success += int(s.get("cbs_successes", 0) or 0)
             total_cbs_fail += int(s.get("cbs_failures", 0) or 0)
+            total_rule_based_exec += int(s.get("rule_based_executions", 0) or 0)
+            total_rule_based_success += int(s.get("rule_based_successes", 0) or 0)
+            total_rule_based_fail += int(s.get("rule_based_failures", 0) or 0)
 
         def _stats(values):
             if not values:
@@ -527,7 +570,11 @@ class DeadlockLogger:
             "cbs_success_rate": float(total_cbs_success) / float(total_cbs_exec) if total_cbs_exec > 0 else 0.0,
             "cbs_executions": total_cbs_exec,
             "cbs_successes": total_cbs_success,
-            "cbs_failures": total_cbs_fail
+            "cbs_failures": total_cbs_fail,
+            "rule_based_success_rate": float(total_rule_based_success) / float(total_rule_based_exec) if total_rule_based_exec > 0 else 0.0,
+            "rule_based_executions": total_rule_based_exec,
+            "rule_based_successes": total_rule_based_success,
+            "rule_based_failures": total_rule_based_fail
         }
     
     def get_stats(self) -> Dict:
@@ -554,6 +601,69 @@ class DeadlockLogger:
         
         # self.logger.info(f"💾 Episode data saved to: {filepath}")
         return filepath
+
+    def _plot_mapf_trajectory_figure(
+        self,
+        starts_cont: Dict,
+        goals_cont: Dict,
+        cont_paths: Dict,
+        min_x: float,
+        max_x: float,
+        min_y: float,
+        max_y: float,
+        title: str,
+        resolution: float = 0.0,
+        obstacle_grid=None,
+        extent=None,
+        draw_rect: bool = False,
+    ):
+        """Shared figure for MAPF trajectory (PAR or CBS): starts, goals, paths. Returns (fig, ax)."""
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.set_aspect('equal')
+        ax.set_xlim(min_x, max_x)
+        ax.set_ylim(min_y, max_y)
+        ax.set_title(title)
+        if resolution and resolution > 0:
+            ax.set_xticks(np.arange(min_x, max_x + 1e-9, resolution))
+            ax.set_yticks(np.arange(min_y, max_y + 1e-9, resolution))
+        ax.grid(True, linestyle='--', alpha=0.35)
+        if obstacle_grid is not None and extent is not None:
+            try:
+                grid = np.array(obstacle_grid, dtype=float)
+                if grid.size > 0:
+                    ax.imshow(grid, cmap='Greys', alpha=0.25, origin='lower', extent=extent, interpolation='nearest')
+            except Exception:
+                pass
+        if draw_rect:
+            rect = plt.Rectangle((min_x, min_y), max_x - min_x, max_y - min_y, fill=False, edgecolor='black', linewidth=1.0, linestyle=':')
+            ax.add_patch(rect)
+            ax.text(min_x, min_y, f"({min_x:.2f},{min_y:.2f})", fontsize=8)
+            ax.text(max_x, max_y, f"({max_x:.2f},{max_y:.2f})", fontsize=8, ha='right', va='bottom')
+        agents = sorted(set(list(starts_cont.keys()) + list(goals_cont.keys()) + list(cont_paths.keys())))
+        try:
+            colors = plt.colormaps.get_cmap('tab10', max(10, len(agents)))
+        except Exception:
+            colors = plt.cm.get_cmap('tab10', max(10, len(agents)))
+        color_map = {aid: colors(i % 10) for i, aid in enumerate(agents)}
+        for aid, (gx, gy) in goals_cont.items():
+            c = color_map.get(aid, 'gray')
+            ax.plot([gx], [gy], 'x', color=c, markersize=7, alpha=0.9)
+            ax.text(gx, gy, f"g{aid}", fontsize=7, color=c, va='bottom', ha='left')
+        for aid in agents:
+            c = color_map.get(aid, 'gray')
+            if aid in starts_cont:
+                sx, sy = starts_cont[aid]
+                ax.plot([sx], [sy], 'o', color=c, markersize=6, alpha=0.9)
+                ax.text(sx, sy, f"s{aid}", fontsize=7, color=c, va='top', ha='right')
+            path = cont_paths.get(aid, [])
+            if path and len(path) > 1:
+                xs, ys = [p[0] for p in path], [p[1] for p in path]
+                ax.plot(xs, ys, '-', color=c, linewidth=1.5, alpha=0.8)
+            elif aid in starts_cont and aid in goals_cont:
+                sx, sy = starts_cont[aid]
+                gx, gy = goals_cont[aid]
+                ax.plot([sx, gx], [sy, gy], linestyle='--', color=c, linewidth=1.0, alpha=0.5)
+        return fig, ax
     
     def log_par_solver_details(self, par_solver_input: Dict, par_solution, participants: List[int]):
         """Log detailed PAR solver information including initialization, trajectories, and final positions."""
@@ -797,69 +907,28 @@ class DeadlockLogger:
                     if isinstance(gp, (list, tuple)) and len(gp) == 2:
                         goals_cont[aid] = (min_x + (gp[0] + 0.5) * res, min_y + (gp[1] + 0.5) * res)
 
-            # Plot figure
-            fig, ax = plt.subplots(figsize=(6, 6))
-            ax.set_aspect('equal')
-            ax.set_xlim(min_x, max_x)
-            ax.set_ylim(min_y, max_y)
-            ax.set_title(f"PAR Init ep{self.stats['episode']} step{self.stats['step']}")
-            # grid ticks per grid resolution
-            if res > 0:
-                ax.set_xticks(np.arange(min_x, max_x + 1e-9, res))
-                ax.set_yticks(np.arange(min_y, max_y + 1e-9, res))
-                ax.grid(True, linestyle='--', alpha=0.35)
-            # If we have access to sub_map grid, overlay obstacle raster as a light gray image
+            # Plot figure (shared MAPF trajectory helper)
+            obstacle_grid = None
+            extent = None
             try:
-                sub_map = par_details.get('sub_map', None)
-                # Fallback: use current function arguments (par_solver_input)
-                if sub_map is None and isinstance(par_solver_input, dict):
-                    sub_map = par_solver_input.get('sub_map', None)
-                grid = None
+                sub_map = par_details.get('sub_map', None) or (par_solver_input.get('sub_map') if isinstance(par_solver_input, dict) else None)
                 if sub_map is not None and hasattr(sub_map, 'grid'):
-                    grid = np.array(sub_map.grid, dtype=float)
-                elif 'obstacle_grid' in par_details:
-                    grid = np.array(par_details.get('obstacle_grid'))
-                if grid is not None and grid.size > 0:
-                    # grid is indexed [row(y), col(x)] with 1 for obstacle
-                    # extent maps cell edges to continuous coordinates
+                    obstacle_grid = np.array(sub_map.grid, dtype=float)
+                elif par_details.get('obstacle_grid') is not None:
+                    obstacle_grid = np.array(par_details.get('obstacle_grid'))
+                if obstacle_grid is not None and getattr(obstacle_grid, 'size', 0) > 0:
                     extent = [min_x, max_x, min_y, max_y]
-                    ax.imshow(grid, cmap='Greys', alpha=0.25, origin='lower', extent=extent, interpolation='nearest')
             except Exception:
                 pass
-
-            # submap rectangle and corner annotations
-            rect = plt.Rectangle((min_x, min_y), max_x - min_x, max_y - min_y, fill=False, edgecolor='black', linewidth=1.0, linestyle=':')
-            ax.add_patch(rect)
-            ax.text(min_x, min_y, f"({min_x:.2f},{min_y:.2f})", fontsize=8)
-            ax.text(max_x, max_y, f"({max_x:.2f},{max_y:.2f})", fontsize=8, ha='right', va='bottom')
-
-            # choose colors
-            agents = sorted(set(list(starts_cont.keys()) + list(goals_cont.keys()) + list(cont_paths.keys())))
-            colors = plt.cm.get_cmap('tab10', max(10, len(agents)))
-            color_map = {aid: colors(i % 10) for i, aid in enumerate(agents)}
-
-            # draw goals
-            for aid, (gx, gy) in goals_cont.items():
-                c = color_map.get(aid, 'gray')
-                ax.plot([gx], [gy], 'x', color=c, markersize=7, alpha=0.9)
-                ax.text(gx, gy, f"g{aid}", fontsize=7, color=c, va='bottom', ha='left')
-            # draw starts and paths
-            for aid in agents:
-                c = color_map.get(aid, 'gray')
-                if aid in starts_cont:
-                    sx, sy = starts_cont[aid]
-                    ax.plot([sx], [sy], 'o', color=c, markersize=6, alpha=0.9)
-                    ax.text(sx, sy, f"s{aid}", fontsize=7, color=c, va='top', ha='right')
-                path = cont_paths.get(aid, [])
-                if path and len(path) > 1:
-                    xs = [p[0] for p in path]
-                    ys = [p[1] for p in path]
-                    ax.plot(xs, ys, '-', color=c, linewidth=1.5, alpha=0.8)
-                elif aid in starts_cont and aid in goals_cont:
-                    sx, sy = starts_cont[aid]
-                    gx, gy = goals_cont[aid]
-                    ax.plot([sx, gx], [sy, gy], linestyle='--', color=c, linewidth=1.0, alpha=0.5)
-
+            fig, ax = self._plot_mapf_trajectory_figure(
+                starts_cont, goals_cont, cont_paths,
+                min_x, max_x, min_y, max_y,
+                title=f"PAR Init ep{self.stats['episode']} step{self.stats['step']}",
+                resolution=res if res > 0 else 0.0,
+                obstacle_grid=obstacle_grid,
+                extent=extent,
+                draw_rect=True,
+            )
             # save file
             out_dir = self.log_dir / "par_debug"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -884,6 +953,368 @@ class DeadlockLogger:
         except Exception as e:
             # Do not break logging pipeline if visualization fails
             self.logger.debug(f"PAR VIS ERROR: {e}")
+    
+    def save_cbs_trajectory_visualization(self, agent_states: Dict, cbs_coordinator=None, participants: List[int] = None) -> None:
+        """Save CBS solver trajectory figure to current run log dir (cbs_debug).
+        Call on every CBS attempt: when cbs_coordinator is None (failed), pass participants to plot starts/goals only.
+        agent_states: agent_id -> {position, goal, ...}.
+        cbs_coordinator: CBSCoordinator with get_agent_path(agent_id) and current_participants, or None on failure.
+        participants: required when cbs_coordinator is None (list of agent ids that were attempted).
+        """
+        try:
+            out_dir = self.log_dir / "cbs_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with open(out_dir / "_trace.txt", "a") as f:
+                f.write(f"{datetime.now().isoformat()} entered\n")
+        except Exception:
+            pass
+        try:
+            if cbs_coordinator is not None:
+                _cp = getattr(cbs_coordinator, 'current_participants', None)
+                if _cp is not None:
+                    participants = list(_cp)
+                else:
+                    participants = list(participants) if participants is not None else []
+            else:
+                participants = list(participants) if participants is not None else []
+            if not participants:
+                try:
+                    with open(self.log_dir / "cbs_debug" / "_trace.txt", "a") as f:
+                        f.write("early_return: no participants\n")
+                except Exception:
+                    pass
+                return
+            starts_cont = {}
+            goals_cont = {}
+            cont_paths = {}
+            all_x = []
+            all_y = []
+            for pid in participants:
+                state = (agent_states or {}).get(pid, {})
+                pos = state.get('position')
+                if pos is None:
+                    pos = state.get('pos')
+                goal = state.get('goal')
+                if goal is None:
+                    goal = state.get('target')
+                if isinstance(pos, (list, np.ndarray)) and len(pos) >= 2:
+                    try:
+                        sx, sy = float(pos[0]), float(pos[1])
+                    except (TypeError, ValueError, IndexError):
+                        if hasattr(pos, 'flat'):
+                            flat = np.asarray(pos).flat
+                            sx, sy = float(flat[0]), float(flat[1])
+                        else:
+                            continue
+                    starts_cont[pid] = (sx, sy)
+                    all_x.extend([sx])
+                    all_y.extend([sy])
+                if goal is not None:
+                    if hasattr(goal, 'shape') and getattr(goal, 'shape', None) == (2, 1):
+                        gx, gy = float(goal[0, 0]), float(goal[1, 0])
+                    elif isinstance(goal, (list, np.ndarray)) and len(goal) >= 2:
+                        g0, g1 = goal[0], goal[1]
+                        if isinstance(g0, (list, np.ndarray)) and len(g0) > 0 and isinstance(g1, (list, np.ndarray)) and len(g1) > 0:
+                            gx, gy = float(g0[0]), float(g1[0])
+                        else:
+                            gx, gy = float(g0), float(g1)
+                    else:
+                        gx, gy = 0.0, 0.0
+                    goals_cont[pid] = (gx, gy)
+                    all_x.extend([gx])
+                    all_y.extend([gy])
+                if cbs_coordinator is not None and hasattr(cbs_coordinator, 'get_agent_path'):
+                    path = cbs_coordinator.get_agent_path(pid)
+                    if path:
+                        cont_paths[pid] = [(float(p[0]), float(p[1])) for p in path if len(p) >= 2]
+                        for p in cont_paths[pid]:
+                            all_x.append(p[0])
+                            all_y.append(p[1])
+            if not all_x or not all_y:
+                try:
+                    with open(self.log_dir / "cbs_debug" / "_trace.txt", "a") as f:
+                        f.write(f"early_return: no all_x/all_y (len_x={len(all_x)} len_y={len(all_y)})\n")
+                except Exception:
+                    pass
+                return
+            pad = 1.0
+            # default view: participant-local bounding box
+            min_x = min(all_x) - pad
+            max_x = max(all_x) + pad
+            min_y = min(all_y) - pad
+            max_y = max(all_y) + pad
+            resolution = 0.0
+            obstacle_grid = None
+            extent = None
+            # if we have long-range grid debug info on the coordinator, prefer full long-range grid view
+            if cbs_coordinator is not None:
+                try:
+                    info = getattr(cbs_coordinator, "_last_debug_info", None)
+                    if info:
+                        res = float(info.get("resolution") or 0.0)
+                        offset_x = info.get("offset_x")
+                        offset_y = info.get("offset_y")
+                        grid_width = info.get("grid_width")
+                        grid_height = info.get("grid_height")
+                        grid_data = info.get("grid")
+                        if (
+                            res > 0.0
+                            and offset_x is not None
+                            and offset_y is not None
+                            and grid_width
+                            and grid_height
+                        ):
+                            min_x = float(offset_x)
+                            min_y = float(offset_y)
+                            max_x = min_x + float(grid_width) * res
+                            max_y = min_y + float(grid_height) * res
+                            resolution = res
+                            if grid_data is not None:
+                                grid_arr = np.array(grid_data, dtype=float)
+                                if grid_arr.size > 0:
+                                    obstacle_grid = grid_arr
+                                    extent = [min_x, max_x, min_y, max_y]
+                except Exception:
+                    pass
+            has_path = len(cont_paths) > 0
+            if cbs_coordinator is None:
+                title = f"CBS failed (solver returned no solution) ep{self.stats['episode']} step{self.stats['step']}"
+            else:
+                title = f"CBS {'solution' if has_path else 'no solution'} ep{self.stats['episode']} step{self.stats['step']}"
+            fig, ax = self._plot_mapf_trajectory_figure(
+                starts_cont, goals_cont, cont_paths,
+                min_x, max_x, min_y, max_y,
+                title=title,
+                resolution=resolution,
+                obstacle_grid=obstacle_grid,
+                extent=extent,
+                draw_rect=obstacle_grid is not None,
+            )
+            out_dir = self.log_dir / "cbs_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._cbs_vis_count += 1
+            n = self._cbs_vis_count
+            outfile = out_dir / f"cbs_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.png"
+            fig.savefig(str(outfile), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            try:
+                jsonfile = out_dir / f"cbs_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.json"
+                data = {
+                    'episode': self.stats['episode'],
+                    'step': self.stats['step'],
+                    'success': has_path,
+                    'participants': participants,
+                    'starts': {str(k): list(v) for k, v in starts_cont.items()},
+                    'goals': {str(k): list(v) for k, v in goals_cont.items()},
+                    'paths': {str(k): v for k, v in cont_paths.items()}
+                }
+                with open(jsonfile, 'w') as jf:
+                    json.dump(data, jf, indent=2)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                with open(self.log_dir / "cbs_debug" / "_trace.txt", "a") as f:
+                    f.write(f"exception: {type(e).__name__}: {e}\n")
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+            self.logger.debug(f"CBS trajectory vis error: {e}")
+
+    def save_cbs_grid_debug(self, cbs_coordinator) -> None:
+        """Save the real grid and CBS inputs (starts/goals in grid coords) for the last
+        prepare_cbs_execution call, so one can verify why CBS failed/succeeded.
+        Writes to cbs_debug/cbs_ep{ep}_step{step}_n{n}_grid.json using current _cbs_vis_count (same n as the viz just saved)."""
+        try:
+            if cbs_coordinator is None:
+                return
+            info = getattr(cbs_coordinator, "_last_debug_info", None)
+            if not info:
+                return
+            out_dir = self.log_dir / "cbs_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            n = getattr(self, "_cbs_vis_count", 0)
+            ep = self.stats.get("episode", 0)
+            step = self.stats.get("step", 0)
+            outfile = out_dir / f"cbs_ep{ep:03d}_step{step:03d}_n{n:03d}_grid.json"
+            payload = {
+                "episode": ep,
+                "step": step,
+                "n": n,
+                "grid_height": info.get("grid_height"),
+                "grid_width": info.get("grid_width"),
+                "resolution": info.get("resolution"),
+                "offset_x": info.get("offset_x"),
+                "offset_y": info.get("offset_y"),
+                "obstacle_count": info.get("obstacle_count"),
+                "order_ids": info.get("order_ids"),
+                "starts_list": info.get("starts_list"),
+                "goals_list": info.get("goals_list"),
+                "grid": info.get("grid"),
+            }
+            with open(outfile, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception:
+            pass
+
+    def save_rule_based_trajectory_visualization(self, agent_states: Dict, rule_based_coordinator=None, participants: List[int] = None) -> None:
+        """Save rule-based solver trajectory figure and JSON to rule_debug/ (same format as cbs_debug).
+        Call on every rule_based attempt; when rule_based_coordinator is None (failed), plot starts/goals only."""
+        try:
+            out_dir = self.log_dir / "rule_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with open(out_dir / "_trace.txt", "a") as f:
+                f.write(f"{datetime.now().isoformat()} entered\n")
+        except Exception:
+            pass
+        try:
+            if rule_based_coordinator is not None:
+                _cp = getattr(rule_based_coordinator, 'current_participants', None)
+                if _cp is not None:
+                    participants = list(_cp)
+                else:
+                    participants = list(participants) if participants is not None else []
+            else:
+                participants = list(participants) if participants is not None else []
+            if not participants:
+                try:
+                    with open(self.log_dir / "rule_debug" / "_trace.txt", "a") as f:
+                        f.write("early_return: no participants\n")
+                except Exception:
+                    pass
+                return
+            starts_cont = {}
+            goals_cont = {}
+            cont_paths = {}
+            all_x = []
+            all_y = []
+            for pid in participants:
+                state = (agent_states or {}).get(pid, {})
+                pos = state.get('position')
+                if pos is None:
+                    pos = state.get('pos')
+                goal = state.get('goal')
+                if goal is None:
+                    goal = state.get('target')
+                if isinstance(pos, (list, np.ndarray)) and len(pos) >= 2:
+                    try:
+                        sx, sy = float(pos[0]), float(pos[1])
+                    except (TypeError, ValueError, IndexError):
+                        if hasattr(pos, 'flat'):
+                            flat = np.asarray(pos).flat
+                            sx, sy = float(flat[0]), float(flat[1])
+                        else:
+                            continue
+                    starts_cont[pid] = (sx, sy)
+                    all_x.extend([sx])
+                    all_y.extend([sy])
+                if goal is not None:
+                    if hasattr(goal, 'shape') and getattr(goal, 'shape', None) == (2, 1):
+                        gx, gy = float(goal[0, 0]), float(goal[1, 0])
+                    elif isinstance(goal, (list, np.ndarray)) and len(goal) >= 2:
+                        g0, g1 = goal[0], goal[1]
+                        if isinstance(g0, (list, np.ndarray)) and len(g0) > 0 and isinstance(g1, (list, np.ndarray)) and len(g1) > 0:
+                            gx, gy = float(g0[0]), float(g1[0])
+                        else:
+                            gx, gy = float(g0), float(g1)
+                    else:
+                        gx, gy = 0.0, 0.0
+                    goals_cont[pid] = (gx, gy)
+                    all_x.extend([gx])
+                    all_y.extend([gy])
+                if rule_based_coordinator is not None and hasattr(rule_based_coordinator, 'get_agent_path'):
+                    path = rule_based_coordinator.get_agent_path(pid)
+                    if path:
+                        cont_paths[pid] = [(float(p[0]), float(p[1])) for p in path if len(p) >= 2]
+                        for p in cont_paths[pid]:
+                            all_x.append(p[0])
+                            all_y.append(p[1])
+            if not all_x or not all_y:
+                try:
+                    with open(self.log_dir / "rule_debug" / "_trace.txt", "a") as f:
+                        f.write(f"early_return: no all_x/all_y (len_x={len(all_x)} len_y={len(all_y)})\n")
+                except Exception:
+                    pass
+                return
+            pad = 1.0
+            min_x = min(all_x) - pad
+            max_x = max(all_x) + pad
+            min_y = min(all_y) - pad
+            max_y = max(all_y) + pad
+            has_path = len(cont_paths) > 0
+            if rule_based_coordinator is None:
+                title = f"RuleBased failed (no solution) ep{self.stats['episode']} step{self.stats['step']}"
+            else:
+                title = f"RuleBased {'solution' if has_path else 'no solution'} ep{self.stats['episode']} step{self.stats['step']}"
+            fig, ax = self._plot_mapf_trajectory_figure(
+                starts_cont, goals_cont, cont_paths,
+                min_x, max_x, min_y, max_y,
+                title=title,
+                resolution=0.0,
+                obstacle_grid=None,
+                extent=None,
+                draw_rect=False,
+            )
+            out_dir = self.log_dir / "rule_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self._rule_vis_count += 1
+            n = self._rule_vis_count
+            outfile = out_dir / f"rule_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.png"
+            fig.savefig(str(outfile), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            try:
+                jsonfile = out_dir / f"rule_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.json"
+                data = {
+                    'episode': self.stats['episode'],
+                    'step': self.stats['step'],
+                    'success': has_path,
+                    'participants': participants,
+                    'starts': {str(k): list(v) for k, v in starts_cont.items()},
+                    'goals': {str(k): list(v) for k, v in goals_cont.items()},
+                    'paths': {str(k): v for k, v in cont_paths.items()}
+                }
+                with open(jsonfile, 'w') as jf:
+                    json.dump(data, jf, indent=2)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                with open(self.log_dir / "rule_debug" / "_trace.txt", "a") as f:
+                    f.write(f"exception: {type(e).__name__}: {e}\n")
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+            self.logger.debug(f"RuleBased trajectory vis error: {e}")
+
+    def save_rule_based_debug(self, rule_based_coordinator) -> None:
+        """Save rule-based solver debug info (order, starts, goals, path_lengths) to rule_debug/rule_ep*_step*_n*_info.json."""
+        try:
+            if rule_based_coordinator is None:
+                return
+            info = getattr(rule_based_coordinator, "_last_debug_info", None)
+            if not info:
+                return
+            out_dir = self.log_dir / "rule_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            n = getattr(self, "_rule_vis_count", 0)
+            ep = self.stats.get("episode", 0)
+            step = self.stats.get("step", 0)
+            outfile = out_dir / f"rule_ep{ep:03d}_step{step:03d}_n{n:03d}_info.json"
+            starts = info.get("starts", {})
+            goals = info.get("goals", {})
+            payload = {
+                "episode": ep,
+                "step": step,
+                "n": n,
+                "order": info.get("order"),
+                "path_lengths": info.get("path_lengths"),
+                "starts": {str(k): list(v) for k, v in starts.items()},
+                "goals": {str(k): list(v) for k, v in goals.items()},
+            }
+            with open(outfile, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception:
+            pass
     
     def log_par_final_positions(self, agent_final_positions: Dict[int, List[float]]):
         """Log final agent positions after PAR execution completion."""

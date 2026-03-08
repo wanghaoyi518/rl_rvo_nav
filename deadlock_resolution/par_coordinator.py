@@ -758,6 +758,7 @@ class PARCoordinator:
         if self.current_par_solution is None:
             return []
         
+        debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
         # First, try to get path from paths (PNR original output)
         if hasattr(self.current_par_solution, 'paths') and self.current_par_solution.paths:
             # Try both string and integer keys
@@ -775,11 +776,13 @@ class PARCoordinator:
                                         adjusted.append((pt.x + ox, pt.y + oy))
                                     else:
                                         adjusted.append((pt[0] + ox, pt[1] + oy))
-                                print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {adjusted[:5]}...")
+                                if debug_mode:
+                                    print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {adjusted[:5]}...")
                                 return adjusted
                         except Exception:
                             pass
-                        print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {path[:5]}...")
+                        if debug_mode:
+                            print(f"PAR COORDINATOR: Using PNR original path for agent {agent_id}: {path[:5]}...")
                         return path
         
         # Extract path for the specific agent from the PAR solution
@@ -789,7 +792,8 @@ class PARCoordinator:
         
         # Fallback: try to extract from agents_moves if available
         if hasattr(self.current_par_solution, 'agents_moves'):
-            print(f"PAR COORDINATOR: Using reconstructed path from moves for agent {agent_id}")
+            if debug_mode:
+                print(f"PAR COORDINATOR: Using reconstructed path from moves for agent {agent_id}")
             return self.extract_path_from_moves(agent_id)
         
         return []

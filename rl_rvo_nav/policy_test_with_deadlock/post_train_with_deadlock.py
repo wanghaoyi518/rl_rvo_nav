@@ -31,17 +31,19 @@ class post_train_with_deadlock:
         self.nm = neighbor_num
         self.args = args
         
-        # deadlock resolution stats (PAR and CBS distinguished)
+        # deadlock resolution stats (PAR, CBS, rule_based distinguished)
         self.deadlock_stats = {
             'deadlock_detections': 0,
             'mode_switches': 0,
             'par_executions': 0,
             'cbs_executions': 0,
+            'rule_based_executions': 0,
             'total_par_time': 0
         }
         
-        # Initialize test logger
-        self.test_logger = TestLogger(test_type="test_with_deadlock")
+        # Initialize test logger (allow caller to choose test_type)
+        test_type = kwargs.get('test_type', 'test_with_par')
+        self.test_logger = TestLogger(test_type=test_type)
         self.test_logger.set_environment(env)
         
         # Set test logger reference in environment for waypoint logging
@@ -55,8 +57,6 @@ class post_train_with_deadlock:
 
         o, r, d, ep_ret, ep_len, n = self.env.reset(mode=self.reset_mode), 0, False, 0, 0, 0
         ep_ret_list, speed_list, mean_speed_list, ep_len_list, sn = [], [], [], [], 0
-
-        print('Policy Test with Deadlock Resolution Start !')
 
         figure_id = 0
         episode_started = False
@@ -232,7 +232,7 @@ class post_train_with_deadlock:
         # 添加死锁解决相关统计到结果中
         deadlock_info = self._get_deadlock_stats_summary()
 
-        f = open( result_path + result_name, 'a')
+        f = open( result_path + result_name, 'w')
         print( 'policy_name: '+ policy_name, ' successful rate: {:.2%}'.format(sn/self.num_episodes), "average EpLen:", mean_len, "std length", std_len, 'average speed:', average_speed, 'std speed', std_speed, deadlock_info, file = f)
         f.close() 
         
@@ -269,6 +269,7 @@ class post_train_with_deadlock:
                     # update PAR and CBS execution counts
                     self.deadlock_stats['par_executions'] = len(episode_data.get('par_executions', []))
                     self.deadlock_stats['cbs_executions'] = len(episode_data.get('cbs_executions', []))
+                    self.deadlock_stats['rule_based_executions'] = len(episode_data.get('rule_based_executions', []))
             
             # record PAR/CBS execution time (optional)
             for i in range(self.robot_number):
@@ -286,6 +287,7 @@ class post_train_with_deadlock:
         total_mode_switches = 0
         total_par_executions = 0
         total_cbs_executions = 0
+        total_rule_based_executions = 0
 
         if hasattr(self.env.ir_gym, 'deadlock_logger') and self.env.ir_gym.deadlock_logger:
             logger = self.env.ir_gym.deadlock_logger
@@ -294,15 +296,17 @@ class post_train_with_deadlock:
                 if metrics:
                     total_par_executions = int(metrics.get('par_executions', 0) or 0)
                     total_cbs_executions = int(metrics.get('cbs_executions', 0) or 0)
+                    total_rule_based_executions = int(metrics.get('rule_based_executions', 0) or 0)
                     total_deadlock_detections = int(metrics.get('total_deadlock_events', 0) or 0)
                     total_mode_switches = int(metrics.get('total_mode_switches', 0) or 0)
-            if (total_par_executions == 0 and total_cbs_executions == 0) and hasattr(logger, 'episode_data') and logger.episode_data:
+            if (total_par_executions == 0 and total_cbs_executions == 0 and total_rule_based_executions == 0) and hasattr(logger, 'episode_data') and logger.episode_data:
                 episode_data = logger.episode_data
                 if isinstance(episode_data, dict):
                     total_deadlock_detections = episode_data.get('episode_deadlock_count', 0)
                     total_mode_switches = len(episode_data.get('mode_switches', []))
                     total_par_executions = len(episode_data.get('par_executions', []))
                     total_cbs_executions = len(episode_data.get('cbs_executions', []))
+                    total_rule_based_executions = len(episode_data.get('rule_based_executions', []))
 
         if total_deadlock_detections == 0:
             total_deadlock_detections = self.deadlock_stats['deadlock_detections']
@@ -312,11 +316,14 @@ class post_train_with_deadlock:
             total_par_executions = self.deadlock_stats['par_executions']
         if total_cbs_executions == 0:
             total_cbs_executions = self.deadlock_stats.get('cbs_executions', 0)
+        if total_rule_based_executions == 0:
+            total_rule_based_executions = self.deadlock_stats.get('rule_based_executions', 0)
 
         summary = f" | deadlock_detections: {total_deadlock_detections}"
         summary += f" | mode_switches: {total_mode_switches}"
         summary += f" | par_executions: {total_par_executions}"
         summary += f" | cbs_executions: {total_cbs_executions}"
+        summary += f" | rule_based_executions: {total_rule_based_executions}"
         return summary
 
     def load_policy(self, filename, std_factor=1, policy_dict=False):

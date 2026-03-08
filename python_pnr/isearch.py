@@ -186,14 +186,9 @@ class ISearch:
         successors = []
         for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
             new_i, new_j = cur_node.i + di, cur_node.j + dj
-            # DEBUG: Log boundary check details
             in_bounds = map_obj.in_bounds(new_i, new_j) if hasattr(map_obj, 'in_bounds') else False
             is_traversable = map_obj.is_traversable(new_i, new_j)
             not_occupied = (new_i, new_j) not in occupied_nodes
-            
-            # Log when boundary is exceeded
-            if not in_bounds:
-                print(f"DEBUG BOUNDARY: Position ({new_i}, {new_j}) exceeds bounds - map size: {getattr(map_obj, 'width', 'unknown')}x{getattr(map_obj, 'height', 'unknown')}")
             
             if (is_traversable and not_occupied):
                 neighbor = Node(new_i, new_j)
@@ -209,23 +204,8 @@ class ISearch:
         self.lppath = []
         current = cur_node
         while current is not None:
-            # DEBUG: Check if any path node is out of bounds
-            # Use the map_obj that was passed to startSearch
-            if hasattr(self, 'map_obj') and self.map_obj:
-                if not self.map_obj.in_bounds(current.i, current.j):
-                    print(f"DEBUG PATH: Out-of-bounds node in path: ({current.i}, {current.j}) - map size: {self.map_obj.width}x{self.map_obj.height}")
             self.lppath.insert(0, current)
             current = getattr(current, 'parent', None)
-        
-        # DEBUG: Log the complete path
-        if self.lppath:
-            path_coords = [(node.i, node.j) for node in self.lppath]
-            print(f"DEBUG PATH: A* generated path with {len(path_coords)} nodes: {path_coords[:5]}...{path_coords[-5:] if len(path_coords) > 5 else path_coords}")
-            # Additional check: verify all coordinates are within bounds
-            if hasattr(self, 'map_obj') and self.map_obj:
-                for i, (node_i, node_j) in enumerate(path_coords):
-                    if not self.map_obj.in_bounds(node_i, node_j):
-                        print(f"DEBUG PATH: Path node {i} ({node_i}, {node_j}) is OUT OF BOUNDS - map size: {self.map_obj.width}x{self.map_obj.height}")
 
     def make_secondary_path(self, map_obj):
         """构建次要路径"""

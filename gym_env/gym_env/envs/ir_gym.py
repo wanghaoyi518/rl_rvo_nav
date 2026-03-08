@@ -75,6 +75,8 @@ class ir_gym(env_base):
         self.par_executor = None
         self.deadlock_config = None
         self.deadlock_logger = None
+        self.cbs_coordinator = None
+        self.rule_based_coordinator = None
         
         # Initialize deadlock resolution modules if enabled
         if self.enable_deadlock_resolution:
@@ -86,8 +88,8 @@ class ir_gym(env_base):
         self._global_planner = None
         self._waypoint_managers = {}
         
-        # Debug: Print long-range navigation status (can be removed in production)
-        if self.enable_long_range_nav:
+        # Debug: Print long-range navigation status (gated by DEBUG_MODE; default off)
+        if self.enable_long_range_nav and self._long_range_verbose():
             print(f"LONG-RANGE: Navigation enabled with GlobalPathPlanner={GlobalPathPlanner is not None}, WaypointManager={WaypointManager is not None}")
             print(f"LONG-RANGE: Config received: {self.long_range_config}")
             if isinstance(self.long_range_config, dict):
@@ -95,6 +97,10 @@ class ir_gym(env_base):
             else:
                 print(f"LONG-RANGE: grid_resolution from config object: {getattr(self.long_range_config, 'grid_resolution', 'NOT_FOUND')}")
         
+
+    def _long_range_verbose(self):
+        """Return True only when DEBUG_MODE is enabled in deadlock config (for LONG-RANGE debug prints)."""
+        return bool(self.deadlock_config.get('DEBUG_MODE', False)) if getattr(self, 'deadlock_config', None) else False
 
     def cal_des_omni_list(self):
         des_vel_list = [robot.cal_des_vel_omni() for robot in self.robot_list]
@@ -196,28 +202,28 @@ class ir_gym(env_base):
                                     robot.goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
                                 except Exception:
                                     pass
-                            # Debug print (angle) for agent 0
-                            if aid == 0 and hasattr(self, 'step_count') and cur_goal is not None:
-                                if not hasattr(self, '_debug_step_count'):
-                                    self._debug_step_count = 0
-                                if self._debug_step_count % 100 == 0:
-                                    print(f"DEBUG Agent 0: pos={pos}, goal={cur_goal}, reached={reached}, final={final_reached}")
-                                    try:
-                                        des_vec = np.squeeze(robot.cal_des_vel_omni())
-                                        goal_vec = (float(cur_goal[0]) - float(pos[0]), float(cur_goal[1]) - float(pos[1]))
-                                        dvx = float(des_vec[0]) if np.size(des_vec) > 0 else 0.0
-                                        dvy = float(des_vec[1]) if np.size(des_vec) > 1 else 0.0
-                                        gvx = float(goal_vec[0])
-                                        gvy = float(goal_vec[1])
-                                        des_norm = max(1e-8, (dvx**2 + dvy**2) ** 0.5)
-                                        goal_norm = max(1e-8, (gvx**2 + gvy**2) ** 0.5)
-                                        dot_val = (dvx * gvx + dvy * gvy) / (des_norm * goal_norm)
-                                        dot_val = max(-1.0, min(1.0, dot_val))
-                                        angle_deg = float(np.degrees(np.arccos(dot_val)))
-                                        print(f"DEBUG Direction: des_vel=({dvx:.3f},{dvy:.3f}), goal_vec=({gvx:.3f},{gvy:.3f}), angle_deg={angle_deg:.1f}")
-                                    except Exception:
-                                        pass
-                                self._debug_step_count += 1
+                            # Debug print (angle) for agent 0 - commented out
+                            # if aid == 0 and hasattr(self, 'step_count') and cur_goal is not None:
+                            #     if not hasattr(self, '_debug_step_count'):
+                            #         self._debug_step_count = 0
+                            #     if self._debug_step_count % 100 == 0:
+                            #         print(f"DEBUG Agent 0: pos={pos}, goal={cur_goal}, reached={reached}, final={final_reached}")
+                            #         try:
+                            #             des_vec = np.squeeze(robot.cal_des_vel_omni())
+                            #             goal_vec = (float(cur_goal[0]) - float(pos[0]), float(cur_goal[1]) - float(pos[1]))
+                            #             dvx = float(des_vec[0]) if np.size(des_vec) > 0 else 0.0
+                            #             dvy = float(des_vec[1]) if np.size(des_vec) > 1 else 0.0
+                            #             gvx = float(goal_vec[0])
+                            #             gvy = float(goal_vec[1])
+                            #             des_norm = max(1e-8, (dvx**2 + dvy**2) ** 0.5)
+                            #             goal_norm = max(1e-8, (gvx**2 + gvy**2) ** 0.5)
+                            #             dot_val = (dvx * gvx + dvy * gvy) / (des_norm * goal_norm)
+                            #             dot_val = max(-1.0, min(1.0, dot_val))
+                            #             angle_deg = float(np.degrees(np.arccos(dot_val)))
+                            #             print(f"DEBUG Direction: des_vel=({dvx:.3f},{dvy:.3f}), goal_vec=({gvx:.3f},{gvy:.3f}), angle_deg={angle_deg:.1f}")
+                            #         except Exception:
+                            #             pass
+                            #     self._debug_step_count += 1
                 except Exception as e:
                     print(f"LONG-RANGE STEP ERROR: {e}")
 
@@ -435,18 +441,21 @@ class ir_gym(env_base):
             try:
                 # Build occupancy grid from workspace if available via PAR environment helper
                 grid, resolution, world_w, world_h = self._build_occupancy_grid_for_long_range()
-                print(f"LONG-RANGE: Grid building returned resolution={resolution}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: Grid building returned resolution={resolution}")
                 if grid is not None:
                     # Get waypoint spacing from config (handle both dict and object)
                     if isinstance(self.long_range_config, dict):
                         waypoint_spacing = self.long_range_config.get('waypoint_min_spacing', 5.0)
                     else:
                         waypoint_spacing = getattr(self.long_range_config, 'waypoint_min_spacing', 5.0)
-                    print(f"LONG-RANGE: Initializing GlobalPathPlanner with resolution={resolution}, waypoint_spacing={waypoint_spacing}")
-                    print(f"LONG-RANGE: Grid actual dimensions: {len(grid)} x {len(grid[0]) if grid else 0}")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Initializing GlobalPathPlanner with resolution={resolution}, waypoint_spacing={waypoint_spacing}")
+                        print(f"LONG-RANGE: Grid actual dimensions: {len(grid)} x {len(grid[0]) if grid else 0}")
                     self._global_planner = GlobalPathPlanner(grid, resolution, waypoint_spacing)
-                    print(f"LONG-RANGE: GlobalPathPlanner initialized with _resolution={self._global_planner._resolution}")
-                    print(f"LONG-RANGE: GlobalPathPlanner grid dimensions: {len(self._global_planner._grid)} x {len(self._global_planner._grid[0]) if self._global_planner._grid else 0}")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: GlobalPathPlanner initialized with _resolution={self._global_planner._resolution}")
+                        print(f"LONG-RANGE: GlobalPathPlanner grid dimensions: {len(self._global_planner._grid)} x {len(self._global_planner._grid[0]) if self._global_planner._grid else 0}")
                     # Initialize per-agent waypoint managers
                     self._waypoint_managers = {}
                     waypoint_data = {}  # Store waypoint data for logging
@@ -520,7 +529,8 @@ class ir_gym(env_base):
                                     waypoints = waypoints[1:]
                         except Exception:
                             pass
-                        print(f"LONG-RANGE: Agent {aid} waypoints: {waypoints}")
+                        if self._long_range_verbose():
+                            print(f"LONG-RANGE: Agent {aid} waypoints: {waypoints}")
                         
                         # Convert numpy arrays to lists for JSON serialization
                         def convert_to_serializable(obj):
@@ -606,6 +616,7 @@ class ir_gym(env_base):
             from deadlock_resolution.par_coordinator import PARCoordinator
             from deadlock_resolution.par_executor import PARExecutor
             from deadlock_resolution.cbs_coordinator import CBSCoordinator
+            from deadlock_resolution.rule_based_coordinator import RuleBasedSequentialCoordinator
             from python_pnr.push_and_rotate import PushAndRotate
             
             # Initialize configuration only if not already set (preserve config loaded in enable_deadlock_resolution_mode)
@@ -618,10 +629,13 @@ class ir_gym(env_base):
             # Initialize deadlock logger first
             try:
                 from rl_rvo_nav.policy_test_with_deadlock.deadlock_logger import get_deadlock_logger
-                self.deadlock_logger = get_deadlock_logger()
-                print("Deadlock logger initialized successfully")
+                log_level = str(self.deadlock_config.get('LOG_LEVEL', 'WARNING')).upper() if self.deadlock_config else 'WARNING'
+                self.deadlock_logger = get_deadlock_logger(log_level=log_level)
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print("Deadlock logger initialized successfully")
             except Exception as e:
-                print(f"Warning: Could not initialize deadlock logger: {e}")
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print(f"Warning: Could not initialize deadlock logger: {e}")
                 self.deadlock_logger = None
             
             # Initialize deadlock resolution modules with logger
@@ -639,21 +653,43 @@ class ir_gym(env_base):
             elif hasattr(self.par_coordinator, 'logger'):
                 self.par_coordinator.logger = self.deadlock_logger
 
-            # Initialize CBS coordinator (optional, controlled by config)
+            # Solver selection: DEADLOCK_SOLVER ('par'|'cbs'|'rule_based'); fallback USE_CBS_INSTEAD_OF_PAR -> 'cbs' else 'par'
             try:
                 use_cbs = bool(self.deadlock_config.get('USE_CBS_INSTEAD_OF_PAR', False))
             except Exception:
                 use_cbs = False
+            solver = self.deadlock_config.get('DEADLOCK_SOLVER', 'par')
+            if solver not in ('par', 'cbs', 'rule_based'):
+                solver = 'cbs' if use_cbs else 'par'
+
             self.cbs_coordinator = None
-            if use_cbs:
+            self.rule_based_coordinator = None
+            if solver == 'rule_based':
+                self.rule_based_coordinator = RuleBasedSequentialCoordinator(self.deadlock_config.config, gym_env=self)
+                if hasattr(self.rule_based_coordinator, 'set_logger') and self.deadlock_logger:
+                    try:
+                        self.rule_based_coordinator.set_logger(self.deadlock_logger)
+                    except Exception:
+                        pass
+            elif solver == 'cbs':
                 self.cbs_coordinator = CBSCoordinator(self.deadlock_config.config, gym_env=self)
-                if hasattr(self.cbs_coordinator, 'set_logger'):
+                if hasattr(self.cbs_coordinator, 'set_logger') and self.deadlock_logger:
                     try:
                         self.cbs_coordinator.set_logger(self.deadlock_logger)
                     except Exception:
                         pass
             else:
-                self.cbs_coordinator = None
+                pass
+
+            if self.cbs_coordinator is not None:
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print("Deadlock resolution: Using CBS for MAPF")
+            elif self.rule_based_coordinator is not None:
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print("Deadlock resolution: Using rule_based for MAPF")
+            else:
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print("Deadlock resolution: Using PAR for MAPF")
 
             self.par_executor = PARExecutor(self.deadlock_config.config)
             self.state_manager = StateManager()
@@ -666,7 +702,8 @@ class ir_gym(env_base):
             if hasattr(self.par_executor, 'set_dependencies'):
                 self.par_executor.set_dependencies(self.state_manager, self.par_coordinator)
             
-            print("Deadlock resolution modules initialized successfully")
+            if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                print("Deadlock resolution modules initialized successfully")
             
         except ImportError as e:
             print(f"Warning: Could not import deadlock resolution modules: {e}")
@@ -679,13 +716,17 @@ class ir_gym(env_base):
         USE_CBS_INSTEAD_OF_PAR and cbs_coordinator are set correctly (even if
         enable_deadlock_resolution was already True from gym.make()).
         """
-        if config_file and self.deadlock_config:
+        if config_file:
+            if self.deadlock_config is None:
+                from config.deadlock_config import DeadlockConfig
+                self.deadlock_config = DeadlockConfig()
             self.deadlock_config.load_from_file(config_file)
         if not self.enable_deadlock_resolution:
             self.enable_deadlock_resolution = True
         if self.enable_deadlock_resolution:
             self._initialize_deadlock_modules()
-        print("Deadlock resolution mode enabled")
+        if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+            print("Deadlock resolution mode enabled")
     
     def disable_deadlock_resolution_mode(self):
         """Disable deadlock resolution mode (restore pure RL)."""
@@ -733,26 +774,36 @@ class ir_gym(env_base):
         
         # Process each agent
         modified_action_list = action_list.copy()
+
+        deadlock_debug = bool(self.deadlock_config.get('DEBUG_MODE', False)) if self.deadlock_config else False
         
-        # Debug: Track which agents are being processed
-        print(f"DEBUG: Step {self.step_count} - Processing {len(action_list)} agents")
+        # Debug: Track which agents are being processed (only when DEBUG_MODE)
+        if deadlock_debug:
+            print(f"DEBUG: Step {self.step_count} - Processing {len(action_list)} agents")
+
+        # Per-step MAPF preparation results (shared across agents if multiple triggers happen)
+        # Keys: 'solver_type', 'paths', 'par_solution', 'valid_participants'
+        mapf_preparation_cache = {}
         
         for agent_id, action in enumerate(action_list):
             current_mode = self.get_current_mode(agent_id)
-            print(f"DEBUG: Agent {agent_id} - Current mode: {current_mode}")
+            if deadlock_debug:
+                print(f"DEBUG: Agent {agent_id} - Current mode: {current_mode}")
             
             # Check for deadlock and mode switching
             if current_mode == 'rl_rvo':
-                print(f"DEBUG: Agent {agent_id} in rl_rvo mode, checking deadlock")
+                if deadlock_debug:
+                    print(f"DEBUG: Agent {agent_id} in rl_rvo mode, checking deadlock")
                 # Check if should switch to PAR mode
                 agent_neighbor_states = self._get_agent_neighbor_states(agent_id, agent_states, neighbor_states)
                 check_start = time.time()
                 detected = self.deadlock_detector.detect_deadlock(agent_id, agent_states, agent_neighbor_states)
                 step_timing["deadlock_check_time"] += time.time() - check_start
                 if detected:
-                    print(f"DEBUG: Agent {agent_id} triggered deadlock detection")
                     deadlock_participants = self.deadlock_detector.get_deadlock_participants(agent_id, agent_states, agent_neighbor_states)
-                    print(f"DEBUG: Agent {agent_id} deadlock participants: {deadlock_participants}")
+                    if deadlock_debug:
+                        print(f"DEBUG: Agent {agent_id} triggered deadlock detection")
+                        print(f"DEBUG: Agent {agent_id} deadlock participants: {deadlock_participants}")
                     if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
                         try:
                             self.deadlock_logger.log_deadlock_participants(agent_id, deadlock_participants)
@@ -762,137 +813,39 @@ class ir_gym(env_base):
                     # Proceed if we have at least one participant (single-agent fallback supported)
                     if len(deadlock_participants) >= 1:
                         try:
-                            # Decide which MAPF solver to use: PAR (default) or CBS
-                            try:
-                                use_cbs = bool(self.deadlock_config.get('USE_CBS_INSTEAD_OF_PAR', False)) if self.deadlock_config else False
-                            except Exception:
-                                use_cbs = False
-
-                            mapf_start = time.time()
-                            par_solution = None
-                            cbs_solution = None
-                            if use_cbs and hasattr(self, 'cbs_coordinator') and self.cbs_coordinator:
-                                cbs_solution = self.cbs_coordinator.prepare_cbs_execution(agent_states, deadlock_participants)
+                            cache_key = tuple(sorted(deadlock_participants))
+                            if cache_key in mapf_preparation_cache:
+                                prep = mapf_preparation_cache[cache_key]
                             else:
-                                par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
-                            step_timing["mapf_solve_time"] += time.time() - mapf_start
+                                prep = self._run_mapf_solver_and_build_paths(agent_id, agent_states, deadlock_participants, step_timing)
+                                if prep is not None:
+                                    mapf_preparation_cache[cache_key] = prep
 
-                            # If solver failed, keep RL_RVO mode
-                            if use_cbs and not cbs_solution:
-                                continue
-                            if (not use_cbs) and par_solution is None:
+                            if prep is None:
                                 continue
 
-                            # Validate solution per participant: require non-empty path or already at goal
-                            valid_participants = []
-                            tol = 0.5
-                            try:
-                                tol = self.deadlock_config.get('GOAL_TOLERANCE') if self.deadlock_config else 0.5
-                            except Exception:
-                                tol = 0.5
-                            for pid in deadlock_participants:
-                                agent_state = agent_states.get(pid, {})
-                                if use_cbs and cbs_solution:
-                                    path = self.cbs_coordinator.get_agent_path(pid)
-                                else:
-                                    path = self.par_executor.get_agent_path_from_solution(pid, par_solution) if hasattr(self, 'par_executor') else None
-                                has_path = bool(path) and len(path) > 0
-                                at_goal = False
-                                if 'position' in agent_state and 'goal' in agent_state and agent_state['goal'] is not None:
-                                    pos = agent_state['position']
-                                    goal = agent_state['goal']
-                                    if isinstance(pos, (list, tuple)) and isinstance(goal, (list, tuple)) and len(pos) >= 2 and len(goal) >= 2:
-                                        gx = goal[0][0] if isinstance(goal[0], list) and len(goal[0]) > 0 else goal[0]
-                                        gy = goal[1][0] if isinstance(goal[1], list) and len(goal[1]) > 0 else goal[1]
-                                        dx = float(pos[0]) - float(gx)
-                                        dy = float(pos[1]) - float(gy)
-                                        at_goal = (dx*dx + dy*dy) ** 0.5 <= float(tol)
-                                if has_path or at_goal:
-                                    valid_participants.append(pid)
-                            
-                            # Allow switching if we have a core subset
-                            # Single-agent fallback: require >=1; otherwise require >=2
-                            required_count = 2
-                            if len(deadlock_participants) == 1:
-                                required_count = 1
-                            if len(valid_participants) < required_count:
+                            solver_type = prep.get('solver_type')
+                            valid_participants = prep.get('valid_participants', [])
+                            paths = prep.get('paths', {})
+                            par_solution = prep.get('par_solution', None)
+
+                            if not valid_participants:
                                 continue
-                            
-                            # Log MAPF preparation with agent positions
-                            if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                                # Log agent positions when switching from RL to MAPF
-                                agent_positions = {}
-                                for participant_id in valid_participants:
-                                    if participant_id in agent_states:
-                                        agent_state = agent_states[participant_id]
-                                        if 'position' in agent_state:
-                                            agent_positions[participant_id] = agent_state['position']
 
-                                try:
-                                    if use_cbs:
-                                        # Reuse existing logger hooks but pass CBS solution summary when possible
-                                        if hasattr(self.deadlock_logger, 'log_par_preparation'):
-                                            self.deadlock_logger.log_par_preparation(agent_id, valid_participants, cbs_solution)
-                                        if hasattr(self.deadlock_logger, 'log_rl_to_mapf_positions'):
-                                            self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
-                                    else:
-                                        self.deadlock_logger.log_par_preparation(agent_id, valid_participants, par_solution)
-                                        self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
-                                        self.deadlock_logger.log_par_solution_paths(par_solution, valid_participants)
-                                except Exception:
-                                    pass
-
-                            # Set PAR (or CBS) mode for all valid participants and initialize MAPF waypoints
+                            # Set MAPF mode and inject waypoints in a solver-agnostic way
                             for participant_id in valid_participants:
                                 old_mode = self.get_current_mode(participant_id)
-                                # MAPF mode: same waypoint tracking and exit logic for PAR or CBS.
-                                if use_cbs:
+                                if solver_type == 'cbs' or solver_type == 'rule_based':
                                     self.state_manager.set_par_mode(participant_id, None)
                                 else:
                                     self.state_manager.set_par_mode(participant_id, par_solution)
-                                # Record when the agent entered PAR to support per-agent timeout
                                 try:
                                     if hasattr(self, 'step_count') and hasattr(self.state_manager, 'set_mode_switch_time'):
                                         self.state_manager.set_mode_switch_time(participant_id, int(self.step_count))
                                 except Exception:
                                     pass
-                                
-                                # Build MAPF waypoints and inject into WaypointManager
-                                cont_path = []
-                                if use_cbs and cbs_solution:
-                                    try:
-                                        cont_path = self.cbs_coordinator.get_agent_path(participant_id)
-                                        print(f"CBS INIT: Agent {participant_id} path length: {len(cont_path)}")
-                                    except Exception as e:
-                                        print(f"CBS INIT: Failed to get path for agent {participant_id}: {e}")
-                                        cont_path = []
-                                else:
-                                    grid_path = []
-                                    try:
-                                        grid_path = self.par_coordinator.get_agent_path(participant_id)
-                                        print(f"PAR INIT: Agent {participant_id} grid path length: {len(grid_path)}")
-                                        if grid_path:
-                                            print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
-                                    except Exception as e:
-                                        print(f"PAR INIT: Failed to get grid path for agent {participant_id}: {e}")
-                                        grid_path = []
 
-                                    if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
-                                        for gp in grid_path:
-                                            try:
-                                                if hasattr(gp, 'x') and hasattr(gp, 'y'):
-                                                    grid_coord = (gp.x, gp.y)
-                                                else:
-                                                    grid_coord = gp
-                                                cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
-                                                cont_path.append(cont)
-                                            except Exception as e:
-                                                print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
-                                                pass
-                                    else:
-                                        print(f"PAR INIT: Cannot convert path for agent {participant_id} - missing environment or grid_to_continuous method")
-                                
-                                # Inject as waypoints if available
+                                cont_path = paths.get(participant_id, [])
                                 if cont_path and isinstance(self._waypoint_managers, dict):
                                     try:
                                         tol = 0.5
@@ -900,16 +853,12 @@ class ir_gym(env_base):
                                             tol = self.deadlock_config.get('GOAL_TOLERANCE') if self.deadlock_config else 0.5
                                         except Exception:
                                             tol = 0.5
-                                        # Ensure save buffer exists
                                         if not hasattr(self, '_saved_lr_managers'):
                                             self._saved_lr_managers = {}
-                                        # Save current LR manager if not already a PAR manager
                                         if participant_id in self._waypoint_managers:
                                             cur_mgr = self._waypoint_managers[participant_id]
                                             if not hasattr(cur_mgr, '_is_par_manager'):
                                                 self._saved_lr_managers[participant_id] = cur_mgr
-                                        # Replace manager for this agent with PAR waypoints and mark as PAR
-                                        # Waypoint force-switch config for PAR tracking as well
                                         try:
                                             fs_enabled = True if not self.deadlock_config else bool(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_ENABLED', True))
                                         except Exception:
@@ -927,36 +876,39 @@ class ir_gym(env_base):
                                         if cur_goal is not None:
                                             import numpy as np
                                             self.robot_list[participant_id].goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
-                                        print(f"PAR INIT: Injected {len(cont_path)} continuous waypoints for agent {participant_id}")
+                                        if deadlock_debug:
+                                            print(f"MAPF INIT: Injected {len(cont_path)} continuous waypoints for agent {participant_id} using solver={solver_type}")
                                     except Exception as e:
-                                        print(f"PAR INIT: Failed to inject waypoints for agent {participant_id}: {e}")
-                                
-                                # Log mode switch
+                                        if deadlock_debug:
+                                            print(f"MAPF INIT: Failed to inject waypoints for agent {participant_id}: {e}")
+
                                 if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
                                     try:
-                                        self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'mapf', f"Deadlock detected by agent {agent_id} ({'CBS' if use_cbs else 'PAR'} solver)")
+                                        self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'mapf', f"Deadlock detected by agent {agent_id} ({solver_type.upper()} solver)")
                                     except Exception:
                                         pass
 
-                            # Log MAPF execution for metrics (PAR vs CBS)
                             if hasattr(self, 'deadlock_logger') and self.deadlock_logger and valid_participants:
                                 try:
-                                    solver_type = 'cbs' if use_cbs else 'par'
+                                    solver_type = prep.get('solver_type', 'unknown')
                                     self.deadlock_logger.log_mapf_execution(solver_type, valid_participants, 'success')
                                 except Exception:
                                     pass
-                            
-                            # print(f"🔴 DEADLOCK DETECTED: Agent {agent_id} triggered deadlock resolution, switching {len(deadlock_participants)} agents to PAR mode")
-                            # print(f"   Participants: {deadlock_participants}")
+                            if not deadlock_debug:
+                                pass
+                            else:
+                                print(f"MAPF: solver={prep.get('solver_type', '?')} waypoints injected for {len(valid_participants)} agents")
                         except Exception as e:
-                            print(f"❌ PAR preparation failed for agent {agent_id}: {e}")
+                            print(f"MAPF preparation failed for agent {agent_id}: {e}")
                             if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
-                                self.deadlock_logger.log_error("PAR_PREPARATION", e, {"agent_id": agent_id, "participants": deadlock_participants})
-                            # Continue with RL_RVO mode if PAR fails
+                                self.deadlock_logger.log_error("MAPF_PREPARATION", e, {"agent_id": agent_id, "participants": deadlock_participants})
+                            # Continue with RL_RVO mode if MAPF fails
                 else:
-                    print(f"DEBUG: Agent {agent_id} did not trigger deadlock detection")
+                    if deadlock_debug:
+                        print(f"DEBUG: Agent {agent_id} did not trigger deadlock detection")
             else:
-                print(f"DEBUG: Agent {agent_id} not in rl_rvo mode, skipping deadlock detection")
+                if deadlock_debug:
+                    print(f"DEBUG: Agent {agent_id} not in rl_rvo mode, skipping deadlock detection")
             
             # Execute action based on current mode: PAR agents no longer override actions; RL path only
         
@@ -988,8 +940,8 @@ class ir_gym(env_base):
                                 robot.goal = np.array([[float(cur_goal[0])], [float(cur_goal[1])]])
                             except Exception:
                                 pass
-                        # PAR quick diagnostics: print per-step tracking status
-                        if mode == 'mapf':
+                        # PAR quick diagnostics: print per-step tracking status (only when DEBUG_MODE is on)
+                        if mode == 'mapf' and deadlock_debug:
                             try:
                                 import numpy as np
                                 des_vec = np.squeeze(robot.cal_des_vel_omni())
@@ -1280,15 +1232,9 @@ class ir_gym(env_base):
         # Enforce boundary constraints before robot movement
         action_list = self._enforce_boundaries(action_list)
         
-        # DEBUG: Log actions before robot_step
-        print(f"ROBOT_STEP DEBUG: About to call robot_step with actions: {action_list}")
-        
         # Execute robot movement with the modified actions
         self.robot_step(action_list, vel_type='omni', stop=True)
         self.obs_cirs_step()
-        
-        # DEBUG: Log actions before observation_reward
-        print(f"OBSERVATION_REWARD DEBUG: About to call observation_reward with actions: {action_list}")
         
         # This is the original step logic
         ts = self.components['robots'].total_states()
@@ -1389,6 +1335,198 @@ class ir_gym(env_base):
             nested[agent_id] = neighbors
         return nested
 
+    def _run_mapf_solver_and_build_paths(self, trigger_agent_id, agent_states, deadlock_participants, step_timing):
+        """Run the configured MAPF solver (PAR, CBS, or rule_based) and build continuous paths per agent.
+
+        Returns a dict with keys:
+            - solver_type: 'par', 'cbs', or 'rule_based'
+            - valid_participants: list of agent ids
+            - paths: dict[agent_id] -> list[(x, y)] in world coordinates
+            - par_solution: PAR solution object (None for CBS and rule_based)
+        or None on failure / no valid participants.
+        """
+        try:
+            deadlock_debug = bool(self.deadlock_config.get('DEBUG_MODE', False)) if self.deadlock_config else False
+            try:
+                use_cbs = bool(self.deadlock_config.get('USE_CBS_INSTEAD_OF_PAR', False)) if self.deadlock_config else False
+            except Exception:
+                use_cbs = False
+            solver_type = self.deadlock_config.get('DEADLOCK_SOLVER', 'par') if self.deadlock_config else 'par'
+            if solver_type not in ('par', 'cbs', 'rule_based'):
+                solver_type = 'cbs' if use_cbs else 'par'
+
+            mapf_start = time.time()
+            par_solution = None
+            cbs_solution = None
+            rule_based_solution = None
+            if solver_type == 'rule_based' and getattr(self, 'rule_based_coordinator', None):
+                rule_based_solution = self.rule_based_coordinator.prepare_rule_based_execution(agent_states, deadlock_participants)
+            elif solver_type == 'cbs' and hasattr(self, 'cbs_coordinator') and self.cbs_coordinator:
+                cbs_solution = self.cbs_coordinator.prepare_cbs_execution(agent_states, deadlock_participants)
+            else:
+                par_solution = self.par_coordinator.prepare_par_execution(agent_states, deadlock_participants)
+            step_timing["mapf_solve_time"] += time.time() - mapf_start
+
+            if solver_type == 'rule_based' and not rule_based_solution:
+                if deadlock_debug:
+                    print("RuleBased: prepare_rule_based_execution failed, keeping RL_RVO for this group")
+                if hasattr(self, 'deadlock_logger') and self.deadlock_logger and hasattr(self.deadlock_logger, 'save_rule_based_trajectory_visualization'):
+                    try:
+                        self.deadlock_logger.save_rule_based_trajectory_visualization(agent_states, None, deadlock_participants)
+                    except Exception:
+                        pass
+                return None
+            if solver_type == 'cbs' and not cbs_solution:
+                if self.deadlock_config and self.deadlock_config.get('DEBUG_MODE', False):
+                    print("CBS: prepare_cbs_execution failed (see CBS logs above), keeping RL_RVO for this group")
+                if hasattr(self, 'deadlock_logger') and self.deadlock_logger and hasattr(self.deadlock_logger, 'save_cbs_trajectory_visualization'):
+                    try:
+                        self.deadlock_logger.save_cbs_trajectory_visualization(agent_states, self.cbs_coordinator, deadlock_participants)
+                    except Exception:
+                        pass
+                    if hasattr(self.deadlock_logger, 'save_cbs_grid_debug') and hasattr(self, 'cbs_coordinator') and self.cbs_coordinator:
+                        try:
+                            self.deadlock_logger.save_cbs_grid_debug(self.cbs_coordinator)
+                        except Exception:
+                            pass
+                return None
+            if solver_type == 'par' and par_solution is None:
+                return None
+
+            valid_participants = []
+            paths = {}
+            tol = 0.5
+            try:
+                tol = self.deadlock_config.get('GOAL_TOLERANCE') if self.deadlock_config else 0.5
+            except Exception:
+                tol = 0.5
+
+            for pid in deadlock_participants:
+                agent_state = agent_states.get(pid, {})
+                if solver_type == 'rule_based' and rule_based_solution:
+                    try:
+                        cont_path = self.rule_based_coordinator.get_agent_path(pid)
+                        if deadlock_debug:
+                            print(f"RuleBased INIT: Agent {pid} path length: {len(cont_path)}")
+                    except Exception as e:
+                        print(f"RuleBased INIT: Failed to get path for agent {pid}: {e}")
+                        cont_path = []
+                elif solver_type == 'cbs' and cbs_solution:
+                    try:
+                        cont_path = self.cbs_coordinator.get_agent_path(pid)
+                        if deadlock_debug:
+                            print(f"CBS INIT: Agent {pid} path length: {len(cont_path)}")
+                    except Exception as e:
+                        print(f"CBS INIT: Failed to get path for agent {pid}: {e}")
+                        cont_path = []
+                else:
+                    cont_path = []
+                    grid_path = []
+                    try:
+                        grid_path = self.par_coordinator.get_agent_path(pid)
+                        if deadlock_debug:
+                            print(f"PAR INIT: Agent {pid} grid path length: {len(grid_path)}")
+                            if grid_path:
+                                print(f"  Grid path: {grid_path[:3]}...{grid_path[-3:] if len(grid_path) > 6 else grid_path[3:]}")
+                    except Exception as e:
+                        print(f"PAR INIT: Failed to get grid path for agent {pid}: {e}")
+                        grid_path = []
+
+                    if grid_path and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment and hasattr(self.par_coordinator.par_environment, 'grid_to_continuous'):
+                        for gp in grid_path:
+                            try:
+                                if hasattr(gp, 'x') and hasattr(gp, 'y'):
+                                    grid_coord = (gp.x, gp.y)
+                                else:
+                                    grid_coord = gp
+                                cont = self.par_coordinator.par_environment.grid_to_continuous(grid_coord)
+                                cont_path.append(cont)
+                            except Exception as e:
+                                if deadlock_debug:
+                                    print(f"PAR INIT: Failed to convert grid point {gp}: {e}")
+                    else:
+                        if solver_type == 'par' and deadlock_debug:
+                            print(f"PAR INIT: Cannot convert path for agent {pid} - missing environment or grid_to_continuous method")
+
+                has_path = bool(cont_path) and len(cont_path) > 0
+                at_goal = False
+                if 'position' in agent_state and 'goal' in agent_state and agent_state['goal'] is not None:
+                    pos = agent_state['position']
+                    goal = agent_state['goal']
+                    if isinstance(pos, (list, tuple)) and isinstance(goal, (list, tuple)) and len(pos) >= 2 and len(goal) >= 2:
+                        gx = goal[0][0] if isinstance(goal[0], list) and len(goal[0]) > 0 else goal[0]
+                        gy = goal[1][0] if isinstance(goal[1], list) and len(goal[1]) > 0 else goal[1]
+                        dx = float(pos[0]) - float(gx)
+                        dy = float(pos[1]) - float(gy)
+                        at_goal = (dx * dx + dy * dy) ** 0.5 <= float(tol)
+                if has_path:
+                    paths[pid] = cont_path
+                if has_path or at_goal:
+                    valid_participants.append(pid)
+
+            required_count = 2
+            if len(deadlock_participants) == 1:
+                required_count = 1
+            if len(valid_participants) < required_count:
+                return None
+
+            if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                agent_positions = {}
+                for participant_id in valid_participants:
+                    if participant_id in agent_states:
+                        a_state = agent_states[participant_id]
+                        if 'position' in a_state:
+                            agent_positions[participant_id] = a_state['position']
+                try:
+                    if solver_type == 'cbs' and hasattr(self.deadlock_logger, 'save_cbs_trajectory_visualization'):
+                        try:
+                            self.deadlock_logger.save_cbs_trajectory_visualization(agent_states, cbs_solution)
+                        except Exception:
+                            pass
+                        if hasattr(self.deadlock_logger, 'save_cbs_grid_debug') and hasattr(self, 'cbs_coordinator') and self.cbs_coordinator:
+                            try:
+                                self.deadlock_logger.save_cbs_grid_debug(self.cbs_coordinator)
+                            except Exception:
+                                pass
+                    if solver_type == 'rule_based' and hasattr(self.deadlock_logger, 'save_rule_based_trajectory_visualization'):
+                        try:
+                            self.deadlock_logger.save_rule_based_trajectory_visualization(agent_states, rule_based_solution)
+                        except Exception:
+                            pass
+                        if hasattr(self.deadlock_logger, 'save_rule_based_debug') and getattr(self, 'rule_based_coordinator', None) is not None:
+                            try:
+                                self.deadlock_logger.save_rule_based_debug(self.rule_based_coordinator)
+                            except Exception:
+                                pass
+                    if hasattr(self.deadlock_logger, 'log_par_preparation'):
+                        if solver_type == 'cbs':
+                            self.deadlock_logger.log_par_preparation(trigger_agent_id, valid_participants, cbs_solution)
+                        elif solver_type == 'rule_based':
+                            self.deadlock_logger.log_par_preparation(trigger_agent_id, valid_participants, rule_based_solution)
+                        else:
+                            self.deadlock_logger.log_par_preparation(trigger_agent_id, valid_participants, par_solution)
+                    if hasattr(self.deadlock_logger, 'log_rl_to_mapf_positions'):
+                        self.deadlock_logger.log_rl_to_mapf_positions(agent_positions)
+                    if solver_type == 'par' and hasattr(self.deadlock_logger, 'log_par_solution_paths'):
+                        self.deadlock_logger.log_par_solution_paths(par_solution, valid_participants)
+                except Exception:
+                    pass
+
+            return {
+                'solver_type': solver_type,
+                'valid_participants': valid_participants,
+                'paths': paths,
+                'par_solution': par_solution
+            }
+        except Exception as e:
+            print(f"❌ MAPF solver execution failed for trigger agent {trigger_agent_id}: {e}")
+            if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                try:
+                    self.deadlock_logger.log_error("MAPF_SOLVER_EXECUTION", e, {"agent_id": trigger_agent_id, "participants": deadlock_participants})
+                except Exception:
+                    pass
+            return None
+
     # --- Long-range helper: build occupancy grid consistent with PAR workspace ---
     def _build_occupancy_grid_for_long_range(self):
         try:
@@ -1398,10 +1536,12 @@ class ir_gym(env_base):
                     resolution = float(self.long_range_config.get('grid_resolution', 0.5))
                 else:
                     resolution = float(getattr(self.long_range_config, 'grid_resolution', 0.5))
-                print(f"LONG-RANGE GRID: Read grid_resolution={resolution} from config")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE GRID: Read grid_resolution={resolution} from config")
             except Exception as e:
                 resolution = 0.5
-                print(f"LONG-RANGE GRID: Failed to read grid_resolution, using default={resolution}, error={e}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE GRID: Failed to read grid_resolution, using default={resolution}, error={e}")
             
             # Get world bounds (same as PAR workspace bounds)
             world_w = float(getattr(self, '_env_base__width', 10))
@@ -1419,20 +1559,15 @@ class ir_gym(env_base):
                 import numpy as _np
                 arr = _np.array(map_matrix)
                 bin_grid = (arr != 0).astype(int).tolist()
-                print(f"LONG-RANGE GRID MAP: Using map_matrix with user-configured resolution={resolution}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE GRID MAP: Using map_matrix with user-configured resolution={resolution}")
                 # Optional: inflate obstacles by dilation (post-raster step)
                 try:
-                    enable_dilate = True
-                    dilate_iters = 1
-                    if isinstance(self.long_range_config, dict):
-                        enable_dilate = bool(self.long_range_config.get('enable_obstacle_dilation', True))
-                        dilate_iters = int(self.long_range_config.get('obstacle_dilation_cells', 1))
-                    else:
-                        enable_dilate = bool(getattr(self.long_range_config, 'enable_obstacle_dilation', True))
-                        dilate_iters = int(getattr(self.long_range_config, 'obstacle_dilation_cells', 1))
+                    enable_dilate, dilate_iters = self._get_obstacle_dilation_for_long_range()
                     if enable_dilate and dilate_iters > 0:
                         bin_grid = self._dilate_obstacle_grid(bin_grid, dilate_iters)
-                        print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on map_matrix grid")
+                        if self._long_range_verbose():
+                            print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on map_matrix grid")
                 except Exception:
                     pass
                 return bin_grid, resolution, int(world_w), int(world_h)
@@ -1446,8 +1581,9 @@ class ir_gym(env_base):
             # Calculate grid dimensions (same as PAR)
             full_w = max(1, int(_math.floor((bx1 - bx0) / res)))
             full_h = max(1, int(_math.floor((by1 - by0) / res)))
-            print(f"LONG-RANGE GRID: World bounds: ({bx0}, {by0}) to ({bx1}, {by1})")
-            print(f"LONG-RANGE GRID: Grid dimensions: {full_w} x {full_h}")
+            if self._long_range_verbose():
+                print(f"LONG-RANGE GRID: World bounds: ({bx0}, {by0}) to ({bx1}, {by1})")
+                print(f"LONG-RANGE GRID: Grid dimensions: {full_w} x {full_h}")
             
             # Initialize grid (same as PAR)
             grid = [[0 for _ in range(full_w)] for _ in range(full_h)]
@@ -1458,28 +1594,25 @@ class ir_gym(env_base):
             
             # Get obstacles (same as PAR)
             obstacles = self._get_environment_obstacles_for_long_range()
-            print(f"LONG-RANGE: Found {len(obstacles)} obstacles")
+            if self._long_range_verbose():
+                print(f"LONG-RANGE: Found {len(obstacles)} obstacles")
             
             # Rasterize obstacles using exact PAR algorithm
             if obstacles:
                 self._populate_obstacles_in_grid_par_style(grid, obstacles, res, min_x, min_y, full_w, full_h)
-                print(f"LONG-RANGE: Populated {len(obstacles)} obstacles into grid")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: Populated {len(obstacles)} obstacles into grid")
             else:
-                print(f"LONG-RANGE: No obstacles found to populate")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: No obstacles found to populate")
             
             # Optional: inflate obstacles by dilation (post-raster step)
             try:
-                enable_dilate = True
-                dilate_iters = 1
-                if isinstance(self.long_range_config, dict):
-                    enable_dilate = bool(self.long_range_config.get('enable_obstacle_dilation', True))
-                    dilate_iters = int(self.long_range_config.get('obstacle_dilation_cells', 1))
-                else:
-                    enable_dilate = bool(getattr(self.long_range_config, 'enable_obstacle_dilation', True))
-                    dilate_iters = int(getattr(self.long_range_config, 'obstacle_dilation_cells', 1))
+                enable_dilate, dilate_iters = self._get_obstacle_dilation_for_long_range()
                 if enable_dilate and dilate_iters > 0:
                     grid = self._dilate_obstacle_grid(grid, dilate_iters)
-                    print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on analytic grid")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Applied obstacle dilation (iters={dilate_iters}) on analytic grid")
             except Exception:
                 pass
 
@@ -1487,6 +1620,28 @@ class ir_gym(env_base):
         except Exception as e:
             print(f"LONG-RANGE GRID ERROR: {e}")
             return None, None
+
+    def _get_obstacle_dilation_for_long_range(self):
+        """Return (enable_dilate, dilate_iters) for long-range grid. Prefer deadlock_config
+        DEADLOCK_OBSTACLE_MARGIN_CELLS so all deadlock solvers (PAR, CBS) share the same margin."""
+        try:
+            if self.deadlock_config is not None:
+                cfg = getattr(self.deadlock_config, 'config', None)
+                if isinstance(cfg, dict) and 'DEADLOCK_OBSTACLE_MARGIN_CELLS' in cfg:
+                    n = int(cfg['DEADLOCK_OBSTACLE_MARGIN_CELLS'])
+                    if n >= 0:
+                        if self._long_range_verbose():
+                            print(f"LONG-RANGE: Using DEADLOCK_OBSTACLE_MARGIN_CELLS={n} for obstacle dilation (deadlock config)")
+                        return True, n
+        except Exception:
+            pass
+            if isinstance(self.long_range_config, dict):
+                enable = bool(self.long_range_config.get('enable_obstacle_dilation', True))
+                iters = int(self.long_range_config.get('obstacle_dilation_cells', 1))
+                return enable, iters
+            enable = bool(getattr(self.long_range_config, 'enable_obstacle_dilation', True))
+            iters = int(getattr(self.long_range_config, 'obstacle_dilation_cells', 1))
+            return enable, iters
 
     def _dilate_obstacle_grid(self, grid, iterations=1):
         """Apply 8-neighborhood binary dilation to obstacle grid for N iterations.
@@ -1710,7 +1865,8 @@ class ir_gym(env_base):
         """Populate the grid with obstacles using the same method as PAR."""
         try:
             for i, obstacle in enumerate(obstacles):
-                print(f"LONG-RANGE: Processing obstacle {i}: {type(obstacle)}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: Processing obstacle {i}: {type(obstacle)}")
                 self._add_obstacle_to_grid(grid, obstacle, resolution, world_width, world_height)
         except Exception as e:
             print(f"LONG-RANGE OBSTACLE POPULATION ERROR: {e}")
@@ -1722,13 +1878,15 @@ class ir_gym(env_base):
                 # Circular obstacle
                 center_x, center_y = obstacle.pos[0], obstacle.pos[1]
                 radius = obstacle.radius
-                print(f"LONG-RANGE: Adding circular obstacle at ({center_x}, {center_y}) with radius {radius}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: Adding circular obstacle at ({center_x}, {center_y}) with radius {radius}")
                 self._add_circular_obstacle_to_grid(grid, center_x, center_y, radius, resolution, world_width, world_height)
                 
             elif hasattr(obstacle, 'vertices'):
                 # Polygon obstacle
                 vertices = obstacle.vertices
-                print(f"LONG-RANGE: Adding polygon obstacle with {len(vertices)} vertices: {vertices}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE: Adding polygon obstacle with {len(vertices)} vertices: {vertices}")
                 self._add_polygon_obstacle_to_grid(grid, vertices, resolution, world_width, world_height)
             elif hasattr(obstacle, 'vertexes'):
                 # Polygon obstacle (ir_sim obs_polygon uses 'vertexes' 2xN)
@@ -1740,10 +1898,12 @@ class ir_gym(env_base):
                     else:
                         # Fallback: attempt to iterate columns
                         vertices = [(float(v[0]), float(v[1])) for v in getattr(obstacle, 'vertexes')]
-                    print(f"LONG-RANGE: Adding polygon obstacle (vertexes) with {len(vertices)} vertices: {vertices}")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Adding polygon obstacle (vertexes) with {len(vertices)} vertices: {vertices}")
                     self._add_polygon_obstacle_to_grid(grid, vertices, resolution, world_width, world_height)
                 except Exception:
-                    print(f"LONG-RANGE: Failed to process obstacle with vertexes")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Failed to process obstacle with vertexes")
                     pass
                     
         except Exception as e:
@@ -1777,14 +1937,16 @@ class ir_gym(env_base):
         
         # Convert vertices to grid coordinates using floor to preserve obstacle thickness
         grid_vertices = [(int(v[0] / resolution), int(v[1] / resolution)) for v in vertices]
-        print(f"LONG-RANGE: Grid vertices: {grid_vertices}")
+        if self._long_range_verbose():
+            print(f"LONG-RANGE: Grid vertices: {grid_vertices}")
         
         # Find bounding box
         min_x = min(v[0] for v in grid_vertices)
         max_x = max(v[0] for v in grid_vertices)
         min_y = min(v[1] for v in grid_vertices)
         max_y = max(v[1] for v in grid_vertices)
-        print(f"LONG-RANGE: Bounding box: x=[{min_x}, {max_x}], y=[{min_y}, {max_y}]")
+        if self._long_range_verbose():
+            print(f"LONG-RANGE: Bounding box: x=[{min_x}, {max_x}], y=[{min_y}, {max_y}]")
         
         # Mark grid cells within the polygon as obstacles
         obstacle_count = 0
@@ -1812,7 +1974,8 @@ class ir_gym(env_base):
                         obstacle_count += 1
                 break  # Only need to check once per obstacle
         
-        print(f"LONG-RANGE: Marked {obstacle_count} grid cells as obstacles")
+        if self._long_range_verbose():
+            print(f"LONG-RANGE: Marked {obstacle_count} grid cells as obstacles")
     
     def _point_in_polygon(self, x, y, vertices):
         """Check if a point is inside a polygon using ray casting algorithm."""
@@ -1842,7 +2005,8 @@ class ir_gym(env_base):
         try:
             # Note: We no longer pre-mark boundaries as obstacles.
             # Instead, boundary checking is done dynamically during path planning.
-            print(f"LONG-RANGE: Boundary checking is now handled dynamically (grid: {len(grid[0])}x{len(grid)}, world: {world_width}x{world_height})")
+            if self._long_range_verbose():
+                print(f"LONG-RANGE: Boundary checking is now handled dynamically (grid: {len(grid[0])}x{len(grid)}, world: {world_width}x{world_height})")
             
         except Exception as e:
             print(f"LONG-RANGE BOUNDARY ERROR: {e}")
@@ -1855,12 +2019,14 @@ class ir_gym(env_base):
                 # Add waypoint data to current episode data
                 if hasattr(self._test_logger, 'current_episode_data'):
                     self._test_logger.current_episode_data['waypoint_data'] = waypoint_data
-                    print(f"LONG-RANGE: Logged waypoint data for {len(waypoint_data)} agents")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Logged waypoint data for {len(waypoint_data)} agents")
             else:
                 # Try to find logger through environment chain
                 if hasattr(self, 'env') and hasattr(self.env, 'test_logger'):
                     self.env.test_logger.current_episode_data['waypoint_data'] = waypoint_data
-                    print(f"LONG-RANGE: Logged waypoint data for {len(waypoint_data)} agents")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Logged waypoint data for {len(waypoint_data)} agents")
         except Exception as e:
             print(f"LONG-RANGE LOGGING ERROR: {e}")
 
@@ -1868,7 +2034,8 @@ class ir_gym(env_base):
         """Log discretized grid map for debugging."""
         try:
             if hasattr(self, '_test_logger') and self._test_logger:
-                print(f"DEBUG: Logging discretized grid map")
+                if self._long_range_verbose():
+                    print(f"DEBUG: Logging discretized grid map")
                 
                 # Create grid info
                 grid_info = {
@@ -1883,18 +2050,21 @@ class ir_gym(env_base):
                 # Add to episode data
                 if hasattr(self._test_logger, 'current_episode_data'):
                     self._test_logger.current_episode_data['discretized_grid'] = grid_info
-                    print(f"LONG-RANGE: Logged discretized grid map")
+                    if self._long_range_verbose():
+                        print(f"LONG-RANGE: Logged discretized grid map")
                 
                 # Print grid visualization for debugging
-                print(f"LONG-RANGE GRID MAP:")
-                print(f"  World: {world_width}x{world_height}, Grid: {len(grid[0])}x{len(grid)}, Resolution: {resolution}")
-                print(f"  Grid visualization (0=free, 1=obstacle):")
-                for i, row in enumerate(grid):
-                    row_str = ''.join(['0' if cell == 0 else '1' for cell in row])
-                    print(f"    Row {i:2d}: {row_str}")
+                if self._long_range_verbose():
+                    print(f"LONG-RANGE GRID MAP:")
+                    print(f"  World: {world_width}x{world_height}, Grid: {len(grid[0])}x{len(grid)}, Resolution: {resolution}")
+                    print(f"  Grid visualization (0=free, 1=obstacle):")
+                    for i, row in enumerate(grid):
+                        row_str = ''.join(['0' if cell == 0 else '1' for cell in row])
+                        print(f"    Row {i:2d}: {row_str}")
                     
             else:
-                print(f"DEBUG: No test logger available for grid map")
+                if self._long_range_verbose():
+                    print(f"DEBUG: No test logger available for grid map")
         except Exception as e:
             print(f"LONG-RANGE GRID LOG ERROR: {e}")
 

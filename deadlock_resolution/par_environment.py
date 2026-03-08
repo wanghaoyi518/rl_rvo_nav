@@ -477,14 +477,33 @@ class PAREnvironment:
             if map_matrix is None and use_analytic and isinstance(obstacles, (list, tuple)) and len(obstacles) > 0:
                 for obstacle in obstacles:
                     self._add_obstacle_to_grid(sub_map, obstacle)
-                # Optional: inflate obstacles by dilation (post-raster step)
+                # Optional: inflate obstacles by dilation (post-raster step).
+                # Prefer DEADLOCK_OBSTACLE_MARGIN_CELLS so that PAR shares the same
+                # deadlock grid margin semantics as other MAPF solvers; fall back to
+                # legacy ENABLE_OBSTACLE_DILATION / OBSTACLE_DILATION_CELLS only
+                # when DEADLOCK_OBSTACLE_MARGIN_CELLS is not provided.
                 try:
-                    enable_dilate = bool(self.config.get('ENABLE_OBSTACLE_DILATION', True)) if isinstance(self.config, dict) else True
-                    dilate_iters = int(self.config.get('OBSTACLE_DILATION_CELLS', 1)) if isinstance(self.config, dict) else 1
-                    if enable_dilate and dilate_iters > 0:
-                        self._dilate_obstacle_grid_inplace(sub_map, dilate_iters)
+                    margin_iters = 0
+                    if isinstance(self.config, dict) and 'DEADLOCK_OBSTACLE_MARGIN_CELLS' in self.config:
+                        try:
+                            margin_iters = int(self.config.get('DEADLOCK_OBSTACLE_MARGIN_CELLS', 0))
+                        except Exception:
+                            margin_iters = 0
                         if debug_mode:
-                            print(f"PAR: Applied obstacle dilation (iters={dilate_iters}) on analytic grid")
+                            print(f"PAR: Using DEADLOCK_OBSTACLE_MARGIN_CELLS={margin_iters} for obstacle dilation (deadlock config)")
+                    else:
+                        enable_dilate = bool(self.config.get('ENABLE_OBSTACLE_DILATION', False)) if isinstance(self.config, dict) else False
+                        if enable_dilate:
+                            try:
+                                margin_iters = int(self.config.get('OBSTACLE_DILATION_CELLS', 1))
+                            except Exception:
+                                margin_iters = 0
+                            if debug_mode and margin_iters > 0:
+                                print(f"PAR: Using legacy OBSTACLE_DILATION_CELLS={margin_iters} for obstacle dilation")
+                    if margin_iters > 0:
+                        self._dilate_obstacle_grid_inplace(sub_map, margin_iters)
+                        if debug_mode:
+                            print(f"PAR: Applied obstacle dilation (iters={margin_iters}) on analytic grid")
                 except Exception:
                     pass
             else:

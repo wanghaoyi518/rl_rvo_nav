@@ -105,6 +105,8 @@ class DeadlockConfig:
             # CBS (Conflict-Based Search) parameters
             # If True, use CBS instead of PAR as the MAPF solver for deadlock resolution
             'USE_CBS_INSTEAD_OF_PAR': False,
+            # Solver choice: 'par' | 'cbs' | 'rule_based'. If USE_CBS_INSTEAD_OF_PAR is True and DEADLOCK_SOLVER not set, treated as 'cbs'
+            'DEADLOCK_SOLVER': 'par',
             # Robot radius in world units used by CBS (converted to grid cells using GRID_RESOLUTION)
             # If not set explicitly, CBSCoordinator defaults to GRID_RESOLUTION * 0.5
             'CBS_ROBOT_RADIUS': 0.25,
@@ -112,6 +114,12 @@ class DeadlockConfig:
             'CBS_MAX_ITER': 200,
             # Low-level STA* max iterations
             'CBS_LOW_LEVEL_MAX_ITER': 100,
+
+            # Rule-based sequential solver (when DEADLOCK_SOLVER == 'rule_based')
+            # Optional: override wait waypoints for non-first agents (0 = use previous path length)
+            'RULE_BASED_WAIT_WAYPOINTS': 0,
+            # Step size for linear interpolation of segments (world units); if 0, use GRID_RESOLUTION
+            'RULE_BASED_INTERP_STEP': 0,
             
             # Single agent deadlock trigger parameters
             'SINGLE_AGENT_TRIGGER_ENABLED': True,  # Enable single-agent fallback trigger
@@ -169,7 +177,6 @@ class DeadlockConfig:
             
             # Update configuration with file values
             self.config.update(file_config)
-            print(f"Configuration loaded from {config_file}")
             
         except Exception as e:
             print(f"Error loading configuration from {config_file}: {e}")
@@ -392,6 +399,10 @@ class DeadlockConfig:
         trigger_type = self.get('TRIGGER_TYPE')
         if trigger_type not in ['SPEED_BUFFER']:
             errors.append("TRIGGER_TYPE must be 'SPEED_BUFFER'")
+        
+        solver = self.get('DEADLOCK_SOLVER', 'par')
+        if solver not in ('par', 'cbs', 'rule_based'):
+            errors.append("DEADLOCK_SOLVER must be 'par', 'cbs', or 'rule_based'")
         
         # Report errors
         if errors:

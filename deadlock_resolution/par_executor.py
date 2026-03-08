@@ -266,16 +266,19 @@ class PARExecutor:
         if par_solution is None:
             return []
         
+        debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
         # Try to get path from paths (PNR original output)
         if hasattr(par_solution, 'paths') and par_solution.paths:
-            print(f"PAR EXECUTOR: Available paths keys: {list(par_solution.paths.keys())}")
-            print(f"PAR EXECUTOR: Looking for agent {agent_id} path")
+            if debug_mode:
+                print(f"PAR EXECUTOR: Available paths keys: {list(par_solution.paths.keys())}")
+                print(f"PAR EXECUTOR: Looking for agent {agent_id} path")
             
             # Get the correct mapping from PAR coordinator
             if hasattr(par_solution, 'id_solver_to_real') and par_solution.id_solver_to_real:
                 # Use the correct mapping from coordinator
                 id_solver_to_real = par_solution.id_solver_to_real
-                print(f"PAR EXECUTOR: Using mapping: {id_solver_to_real}")
+                if debug_mode:
+                    print(f"PAR EXECUTOR: Using mapping: {id_solver_to_real}")
                 
                 # Find the solver ID for this real agent ID
                 solver_id = None
@@ -300,24 +303,30 @@ class PARExecutor:
                     except Exception:
                         pass
                     if path:
-                        print(f"PAR EXECUTOR: Found path for agent {agent_id} using solver ID {solver_id}, length: {len(path)}")
+                        if debug_mode:
+                            print(f"PAR EXECUTOR: Found path for agent {agent_id} using solver ID {solver_id}, length: {len(path)}")
                         return path
                 else:
-                    print(f"PAR EXECUTOR: No solver ID found for agent {agent_id} in mapping {id_solver_to_real}")
+                    if debug_mode:
+                        print(f"PAR EXECUTOR: No solver ID found for agent {agent_id} in mapping {id_solver_to_real}")
             else:
                 # Fallback: try direct mapping first
                 for agent_key in [str(agent_id), agent_id]:
                     if agent_key in par_solution.paths:
                         path = par_solution.paths[agent_key]
                         if path:
-                            print(f"PAR EXECUTOR: Found path for agent {agent_id} with key {agent_key}, length: {len(path)}")
+                            if debug_mode:
+                                print(f"PAR EXECUTOR: Found path for agent {agent_id} with key {agent_key}, length: {len(path)}")
                             return path
                 
-                print(f"PAR EXECUTOR: No mapping available, trying fallback logic")
+                if debug_mode:
+                    print(f"PAR EXECUTOR: No mapping available, trying fallback logic")
             
-            print(f"PAR EXECUTOR: No path found for agent {agent_id}")
+            if debug_mode:
+                print(f"PAR EXECUTOR: No path found for agent {agent_id}")
         else:
-            print(f"PAR EXECUTOR: No paths attribute or empty paths")
+            if debug_mode:
+                print(f"PAR EXECUTOR: No paths attribute or empty paths")
         
         return []
     
@@ -520,8 +529,10 @@ class PARExecutor:
         
         # Convert grid path to continuous coordinates
         continuous_path = []
+        debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
         if self.par_coordinator is not None and hasattr(self.par_coordinator, 'par_environment') and self.par_coordinator.par_environment:
-            print(f"PAR EXECUTOR: Converting grid path for agent {agent_id}: {grid_path[:5]}...")
+            if debug_mode:
+                print(f"PAR EXECUTOR: Converting grid path for agent {agent_id}: {grid_path[:5]}...")
             for grid_pos in grid_path:
                 # Handle both Point objects and (x, y) tuples
                 if hasattr(grid_pos, 'x') and hasattr(grid_pos, 'y'):
@@ -533,10 +544,11 @@ class PARExecutor:
                 
                 continuous_pos = self.par_coordinator.par_environment.grid_to_continuous(grid_tuple)
                 continuous_path.append(continuous_pos)
-                if len(continuous_path) <= 5:  # Only print first 5 conversions
+                if debug_mode and len(continuous_path) <= 5:  # Only print first 5 conversions
                     print(f"PAR EXECUTOR: Grid {grid_tuple} -> Continuous {continuous_pos}")
         else:
-            print(f"PAR EXECUTOR: Using fallback conversion for agent {agent_id}")
+            if debug_mode:
+                print(f"PAR EXECUTOR: Using fallback conversion for agent {agent_id}")
             # Fallback: assume grid resolution and bounds
             grid_resolution = self.config.get('GRID_RESOLUTION', 0.5)
             for grid_pos in grid_path:
@@ -546,7 +558,7 @@ class PARExecutor:
                     (grid_pos[1] + 0.5) * grid_resolution
                 )
                 continuous_path.append(continuous_pos)
-                if len(continuous_path) <= 5:  # Only print first 5 conversions
+                if debug_mode and len(continuous_path) <= 5:  # Only print first 5 conversions
                     print(f"PAR EXECUTOR: Fallback Grid {grid_pos} -> Continuous {continuous_pos}")
         
         return continuous_path
@@ -641,8 +653,9 @@ class PARExecutor:
         
         progress_percentage = (path_index / total_length * 100) if total_length > 0 else 0
         
-        # Debug: print when agent has no path
-        if total_length == 0:
+        # Debug: print when agent has no path (only when DEBUG_MODE)
+        debug_mode = bool(self.config.get('DEBUG_MODE', False)) if isinstance(self.config, dict) else False
+        if total_length == 0 and debug_mode:
             print(f"PAR EXECUTOR DEBUG: Agent {agent_id} has no path (total_length=0)")
             print(f"  _agent_full_paths exists: {hasattr(self, '_agent_full_paths')}")
             if hasattr(self, '_agent_full_paths'):

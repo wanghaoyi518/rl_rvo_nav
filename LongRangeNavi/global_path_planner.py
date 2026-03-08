@@ -35,10 +35,8 @@ class GlobalPathPlanner:
 
         # Check if start and goal are within grid bounds
         if not self._is_grid_position_valid(start_i, start_j):
-            print(f"DEBUG A*: Start position {start_xy} -> grid({start_i}, {start_j}) is out of bounds")
             return [goal_xy]
         if not self._is_grid_position_valid(goal_i, goal_j):
-            print(f"DEBUG A*: Goal position {goal_xy} -> grid({goal_i}, {goal_j}) is out of bounds")
             return [goal_xy]
 
         # Define goal predicate in grid coordinates
@@ -49,9 +47,6 @@ class GlobalPathPlanner:
         result = self._search.startSearch(self._sub_map, None, start_i, start_j, goal_i, goal_j, is_goal, True, True, 0, -1, -1, set())
 
         if not getattr(result, 'pathfound', False):
-            print(f"DEBUG A*: No path found from {start_xy} to {goal_xy}")
-            print(f"  Grid start: ({start_i}, {start_j}), Grid goal: ({goal_i}, {goal_j})")
-            print(f"  Grid size: {len(self._grid)}x{len(self._grid[0]) if self._grid else 0}")
             return [goal_xy]
 
         dense_grid_path: List[Tuple[int, int]] = [(p.i, p.j) for p in getattr(result, 'lppath', [])]
@@ -72,9 +67,6 @@ class GlobalPathPlanner:
             sparse.append(dense_world_path[-1])
 
 
-        print(f"DEBUG WAYPOINT SIMPLIFICATION: dense_path={len(dense_world_path)}, sparse_path={len(sparse)}, spacing={self._waypoint_spacing}")
-        print(f"DEBUG DENSE PATH: {dense_world_path[:5]}...{dense_world_path[-3:] if len(dense_world_path) > 5 else dense_world_path}")
-        print(f"DEBUG SPARSE PATH: {sparse}")
         return sparse
 
     def separate_waypoints(self, waypoint_lists: List[List[Tuple[float, float]]], min_distance: float = 1.0) -> List[List[Tuple[float, float]]]:

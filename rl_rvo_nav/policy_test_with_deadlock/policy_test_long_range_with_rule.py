@@ -21,7 +21,7 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-parser = argparse.ArgumentParser(description='policy test for long-range waypoint navigation with CBS-based deadlock resolution')
+parser = argparse.ArgumentParser(description='policy test for long-range waypoint navigation with rule-based deadlock resolution')
 parser.add_argument('--policy_type', default='drl')
 parser.add_argument('--model_path', default='policy_train/model_save')
 parser.add_argument('--model_name', default='pre_train_check_point_1000.pt')
@@ -47,9 +47,9 @@ parser.add_argument('--waypoint_spacing', type=float, default=2.0)
 parser.add_argument('--reach_threshold', type=float, default=0.3)
 parser.add_argument('--waypoint_separation_manhattan', type=float, default=2.0)
 
-# Deadlock resolution with CBS (use CBS instead of PAR when deadlock is detected)
+# Deadlock resolution with rule-based solver (DEADLOCK_SOLVER='rule_based')
 parser.add_argument('--enable_deadlock_resolution', action='store_true', default=True)
-parser.add_argument('--deadlock_config_file', default=None, help='JSON with USE_CBS_INSTEAD_OF_PAR; if None, uses deadlock_cbs.json in this dir')
+parser.add_argument('--deadlock_config_file', default=None, help="JSON with DEADLOCK_SOLVER='rule_based'; if None, uses deadlock_rule.json in this dir")
 
 policy_args = parser.parse_args()
 
@@ -90,15 +90,16 @@ env = gym.make(
 
 if policy_args.enable_deadlock_resolution:
     deadlock_config = DeadlockConfig()
-    deadlock_config.set('DEADLOCK_SOLVER', 'cbs')
+    deadlock_config.set('DEADLOCK_SOLVER', 'rule_based')
     deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 2)
     env.ir_gym.deadlock_config = deadlock_config
+    # allow overriding by external config file if explicitly provided
     if policy_args.deadlock_config_file:
         env.enable_deadlock_resolution_mode(policy_args.deadlock_config_file)
     else:
         env.enable_deadlock_resolution_mode()
 
-policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode) + '_mode8_lr_with_cbs'
+policy_name = policy_name + '_' + str(policy_args.robot_number) + '_dis' + str(policy_args.dis_mode) + '_mode8_lr_with_rule'
 
 pt = post_train_with_deadlock(
     env,
@@ -114,7 +115,7 @@ pt = post_train_with_deadlock(
     save=policy_args.save,
     show_traj=policy_args.show_traj,
     figure_format='eps',
-    test_type='test_with_cbs'
+    test_type='test_with_rule'
 )
 
 pt.policy_test(
@@ -122,9 +123,9 @@ pt.policy_test(
     fname_model,
     policy_name,
     result_path=str(cur_path),
-    result_name='/result_long_range_with_cbs.txt',
-    figure_save_path=cur_path / 'figure_long_range_with_cbs',
-    ani_save_path=cur_path / 'gif_long_range_with_cbs',
+    result_name='/result_long_range_with_rule.txt',
+    figure_save_path=cur_path / 'figure_long_range_with_rule',
+    ani_save_path=cur_path / 'gif_long_range_with_rule',
     policy_dict=policy_args.policy_dict,
     once=policy_args.once
 )

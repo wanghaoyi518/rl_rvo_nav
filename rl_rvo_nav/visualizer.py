@@ -53,7 +53,6 @@ class TestVisualizer:
         self.map_bounds = None
         self.obstacles = []
         
-        print(f"Test visualizer initialized. Session directory: {self.session_dir}")
     
     def set_environment(self, env):
         """
