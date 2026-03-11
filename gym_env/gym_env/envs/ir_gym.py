@@ -77,6 +77,8 @@ class ir_gym(env_base):
         self.deadlock_logger = None
         self.cbs_coordinator = None
         self.rule_based_coordinator = None
+        # Group-level PAR tuple execution state (waypoint tuples over participants)
+        self._par_tuple_group = None
         
         # Initialize deadlock resolution modules if enabled
         if self.enable_deadlock_resolution:
@@ -782,7 +784,7 @@ class ir_gym(env_base):
             print(f"DEBUG: Step {self.step_count} - Processing {len(action_list)} agents")
 
         # Per-step MAPF preparation results (shared across agents if multiple triggers happen)
-        # Keys: 'solver_type', 'paths', 'par_solution', 'valid_participants'
+        # Keys: 'solver_type', 'paths', 'par_solution', 'valid_participants', 'par_waypoint_tuples'
         mapf_preparation_cache = {}
         
         for agent_id, action in enumerate(action_list):
@@ -887,6 +889,37 @@ class ir_gym(env_base):
                                         self.deadlock_logger.log_mode_switch(participant_id, old_mode, 'mapf', f"Deadlock detected by agent {agent_id} ({solver_type.upper()} solver)")
                                     except Exception:
                                         pass
+
+                            # Initialize PAR tuple group execution state when using PAR solver
+                            if solver_type == 'par' and prep.get('par_waypoint_tuples'):
+                                try:
+                                    par_group = prep.get('par_waypoint_tuples', {})
+                                    tuple_participants = list(par_group.get('participant_ids', []))
+                                    waypoint_tuples = par_group.get('tuples', [])
+                                    if tuple_participants and waypoint_tuples:
+                                        # Use reach threshold consistent with long-range or GOAL_TOLERANCE
+                                        reach_thr = 0.3
+                                        try:
+                                            if isinstance(self.long_range_config, dict):
+                                                reach_thr = float(self.long_range_config.get('reach_threshold', 0.3))
+                                            else:
+                                                reach_thr = float(getattr(self.long_range_config, 'reach_threshold', 0.3))
+                                        except Exception:
+                                            try:
+                                                reach_thr = float(self.deadlock_config.get('GOAL_TOLERANCE', 0.5)) if self.deadlock_config else 0.5
+                                            except Exception:
+                                                reach_thr = 0.5
+                                        self._par_tuple_group = {
+                                            'participant_ids': tuple_participants,
+                                            'tuples': waypoint_tuples,
+                                            'index': 0,
+                                            'reach_threshold': reach_thr,
+                                        }
+                                        if deadlock_debug:
+                                            print(f"PAR TUPLE GROUP INIT: participants={tuple_participants}, steps={len(waypoint_tuples)}, reach_thr={reach_thr}")
+                                except Exception:
+                                    if deadlock_debug:
+                                        print("PAR TUPLE GROUP INIT: failed to initialize tuple group")
 
                             if hasattr(self, 'deadlock_logger') and self.deadlock_logger and valid_participants:
                                 try:
@@ -1106,10 +1139,90 @@ class ir_gym(env_base):
 
         # DEBUG: PAR positions before _step_pure_rl removed (RL-only execution)
 
+        # For active PAR tuple group, override robot.goal to current tuple target before dynamics
+        try:
+            if self._par_tuple_group and isinstance(self._par_tuple_group, dict):
+                group = self._par_tuple_group
+                k = int(group.get('index', 0))
+                tuples = group.get('tuples', [])
+                pids = group.get('participant_ids', [])
+                if 0 <= k < len(tuples):
+                    row = tuples[k]
+                    for i, pid in enumerate(pids):
+                        if pid < len(self.robot_list) and i < len(row):
+                            gx, gy = float(row[i][0]), float(row[i][1])
+                            import numpy as np
+                            try:
+                                self.robot_list[pid].goal = np.array([[gx], [gy]])
+                            except Exception:
+                                self.robot_list[pid].goal = [gx, gy]
+        except Exception:
+            pass
+
         # Now run dynamics with possibly adjusted actions
         obs_list, reward_list, done_list, info_list = self._step_pure_rl(modified_action_list)
 
         # DEBUG: PAR positions after _step_pure_rl removed (RL-only execution)
+
+        # After dynamics: for active PAR tuple group, advance index when all members reach current tuple
+        try:
+            if self._par_tuple_group and isinstance(self._par_tuple_group, dict):
+                group = self._par_tuple_group
+                k = int(group.get('index', 0))
+                tuples = group.get('tuples', [])
+                pids = group.get('participant_ids', [])
+                reach_thr = float(group.get('reach_threshold', 0.5))
+                if 0 <= k < len(tuples) and pids:
+                    ts_after = self.components['robots'].total_states()
+                    agent_states_after = self._get_agent_states_dict(ts_after[0])
+                    row = tuples[k]
+                    all_reached = True
+                    for i, pid in enumerate(pids):
+                        state = agent_states_after.get(pid, {})
+                        pos = state.get('position')
+                        if pos is None or i >= len(row):
+                            all_reached = False
+                            break
+                        try:
+                            px, py = float(pos[0]), float(pos[1])
+                        except Exception:
+                            all_reached = False
+                            break
+                        gx, gy = float(row[i][0]), float(row[i][1])
+                        dx = px - gx
+                        dy = py - gy
+                        if (dx * dx + dy * dy) ** 0.5 > reach_thr:
+                            all_reached = False
+                            break
+                    if all_reached:
+                        if k < len(tuples) - 1:
+                            group['index'] = k + 1
+                        else:
+                            # Final tuple reached: exit PAR for whole group and restore LR managers
+                            try:
+                                for pid in pids:
+                                    old_mode = self.get_current_mode(pid) if hasattr(self, 'get_current_mode') else 'mapf'
+                                    self.state_manager.set_rl_rvo_mode(pid)
+                                    try:
+                                        if hasattr(self, '_saved_lr_managers') and pid in self._saved_lr_managers:
+                                            self._waypoint_managers[pid] = self._saved_lr_managers[pid]
+                                            del self._saved_lr_managers[pid]
+                                            cur_goal_restored = self._waypoint_managers[pid].get_current_goal()
+                                            if cur_goal_restored is not None:
+                                                import numpy as np
+                                                self.robot_list[pid].goal = np.array([[float(cur_goal_restored[0])], [float(cur_goal_restored[1])]])
+                                    except Exception:
+                                        pass
+                                    if hasattr(self, 'deadlock_logger') and self.deadlock_logger:
+                                        try:
+                                            self.deadlock_logger.log_mode_switch(pid, old_mode, 'rl_rvo', 'PAR tuple group completed')
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            self._par_tuple_group = None
+        except Exception:
+            pass
 
         # Ensure info_list carries 'done' based on waypoint final flags (align success criteria)
         try:
@@ -1169,11 +1282,12 @@ class ir_gym(env_base):
                     par_timeout_steps = 0
                 for pid in current_par_agents:
                     try:
-                        # Check completion by waypoint manager
+                        # Check completion by waypoint manager (disabled for PAR tuple group; group exit handles completion)
                         completed = False
-                        if pid in self._waypoint_managers:
-                            cur_goal2 = self._waypoint_managers[pid].get_current_goal()
-                            completed = (cur_goal2 is None)
+                        if not (hasattr(self, '_par_tuple_group') and self._par_tuple_group and isinstance(self._par_tuple_group, dict) and pid in self._par_tuple_group.get('participant_ids', [])):
+                            if pid in self._waypoint_managers:
+                                cur_goal2 = self._waypoint_managers[pid].get_current_goal()
+                                completed = (cur_goal2 is None)
                         # Check timeout if configured
                         timed_out = False
                         if par_timeout_steps and par_timeout_steps > 0 and hasattr(self.state_manager, 'get_mode_switch_time') and hasattr(self, 'step_count'):
@@ -1190,9 +1304,11 @@ class ir_gym(env_base):
                             if self.deadlock_config:
                                 fs_steps2 = int(self.deadlock_config.get('FORCE_WAYPOINT_SWITCH_STEPS', 0))
                             if fs_steps2 > 0 and pid in self._waypoint_managers:
-                                mgr2 = self._waypoint_managers[pid]
-                                if hasattr(mgr2, '_is_par_manager') and hasattr(mgr2, '_stay_steps'):
-                                    stay_fail = int(getattr(mgr2, '_stay_steps', 0)) >= (2 * fs_steps2)
+                                # For PAR tuple group, rely on group exit rather than _stay_steps
+                                if not (hasattr(self, '_par_tuple_group') and self._par_tuple_group and isinstance(self._par_tuple_group, dict) and pid in self._par_tuple_group.get('participant_ids', [])):
+                                    mgr2 = self._waypoint_managers[pid]
+                                    if hasattr(mgr2, '_is_par_manager') and hasattr(mgr2, '_stay_steps'):
+                                        stay_fail = int(getattr(mgr2, '_stay_steps', 0)) >= (2 * fs_steps2)
                         except Exception:
                             stay_fail = False
                         if not completed and not timed_out and not stay_fail:
@@ -1512,12 +1628,26 @@ class ir_gym(env_base):
                 except Exception:
                     pass
 
-            return {
+            prep_result = {
                 'solver_type': solver_type,
                 'valid_participants': valid_participants,
                 'paths': paths,
                 'par_solution': par_solution
             }
+
+            # For PAR, also attach synchronized waypoint tuples (group-level time steps)
+            if solver_type == 'par' and hasattr(self.par_coordinator, 'get_waypoint_tuples'):
+                try:
+                    tuple_participants, waypoint_tuples = self.par_coordinator.get_waypoint_tuples()
+                    if tuple_participants and waypoint_tuples:
+                        prep_result['par_waypoint_tuples'] = {
+                            'participant_ids': list(tuple_participants),
+                            'tuples': waypoint_tuples,
+                        }
+                except Exception:
+                    pass
+
+            return prep_result
         except Exception as e:
             print(f"❌ MAPF solver execution failed for trigger agent {trigger_agent_id}: {e}")
             if hasattr(self, 'deadlock_logger') and self.deadlock_logger:

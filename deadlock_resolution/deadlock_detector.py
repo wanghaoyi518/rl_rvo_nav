@@ -557,7 +557,11 @@ class DeadlockDetector:
             single_enabled = bool(self.config.get('SINGLE_AGENT_TRIGGER_ENABLED', True)) if isinstance(self.config, dict) else True
         except Exception:
             single_enabled = True
-        if single_enabled:
+        try:
+            min_participants = int(self.config.get('MIN_PAR_PARTICIPANTS', 2)) if isinstance(self.config, dict) else 2
+        except Exception:
+            min_participants = 2
+        if single_enabled and min_participants <= 1:
             try:
                 unfinished = [aid for aid, st in agent_states.items() if self.calculate_distance_to_goal(st) > tol]
             except Exception:
@@ -597,10 +601,12 @@ class DeadlockDetector:
         ordered = self._prioritize_component(filtered, agent_states) if len(filtered) > 0 else []
         clipped = ordered[:max(2, max_participants)] if len(ordered) > 0 else []
 
-        # 5) 若裁剪后>=2，采用该集合；若==1且允许单人兜底，直接返回；否则回退到“最佳邻居配对/超时最近邻”
-        if len(clipped) >= 2:
+        # 5) 若裁剪后>=min_participants，采用该集合；
+        #    若==1且允许单人兜底且min_participants<=1，直接返回；
+        #    否则回退到“最佳邻居配对/超时最近邻”
+        if len(clipped) >= max(min_participants, 2):
             participants = clipped
-        elif len(clipped) == 1 and single_enabled:
+        elif len(clipped) == 1 and single_enabled and min_participants <= 1:
             participants = clipped
         else:
             # 回退逻辑：沿用原有二人配对策略
@@ -636,6 +642,10 @@ class DeadlockDetector:
 
             if self.logger:
                 self.logger.logger.debug(f"🔍 PARTICIPANTS CHECK: Agent {agent_id}, participants={participants}, len={len(participants)}, step_counter={self.step_counter}, threshold={self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50)}")
+
+        # 6) 最终强制约束：若参与人数少于min_participants，则不触发MAPF（返回空列表）
+        if len(participants) < min_participants:
+            return []
 
             # 单体回退：如仍仅1人且超时，强制加入通信半径内最近者
             if len(participants) == 1 and self.step_counter >= self.config.get('SINGLE_AGENT_TIME_THRESHOLD', 50):

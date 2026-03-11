@@ -31,7 +31,7 @@ parser.add_argument('--arg_name', default='pre_train')
 parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
-parser.add_argument('--robot_number', type=int, default='4')
+parser.add_argument('--robot_number', type=int, default='8')
 parser.add_argument('--num_episodes', type=int, default='3')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
@@ -91,7 +91,8 @@ env = gym.make(
 if policy_args.enable_deadlock_resolution:
     deadlock_config = DeadlockConfig()
     deadlock_config.set('DEADLOCK_SOLVER', 'par')
-    deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 2)
+    deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 3)
+    deadlock_config.set('SINGLE_AGENT_TRIGGER_ENABLED', False)
     env.ir_gym.deadlock_config = deadlock_config
     if policy_args.deadlock_config_file:
         env.enable_deadlock_resolution_mode(policy_args.deadlock_config_file)

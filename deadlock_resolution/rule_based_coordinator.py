@@ -95,6 +95,7 @@ class RuleBasedSequentialCoordinator:
         self.gym_env = gym_env
         self.current_solution: Dict[int, List[Tuple[float, float]]] = {}
         self.current_participants: List[int] = []
+        self._last_order: List[int] = []
         self._last_debug_info: Optional[Dict] = None
 
     def prepare_rule_based_execution(
@@ -147,6 +148,7 @@ class RuleBasedSequentialCoordinator:
                 goal = (positions[p0][0] + 0.5, positions[p0][1])
             seg = _interpolate_segment(positions[p0], goal, step)
             self.current_solution[p0] = seg
+            self._last_order = [p0]
             self._last_debug_info = {
                 "order": [p0],
                 "starts": dict(positions),
@@ -184,6 +186,7 @@ class RuleBasedSequentialCoordinator:
             if debug:
                 print(f"RuleBased: agent {pid} wait={N_wait} segment={seg_len} total={len(path)}")
 
+        self._last_order = list(order)
         self._last_debug_info = {
             "order": list(order),
             "starts": dict(positions),
@@ -191,6 +194,35 @@ class RuleBasedSequentialCoordinator:
             "path_lengths": {pid: len(self.current_solution[pid]) for pid in order},
         }
         return self
+
+    def get_waypoint_tuples(
+        self,
+    ) -> Tuple[List[int], List[Tuple[Tuple[float, float], ...]]]:
+        """
+        Build per-timestep waypoint tuples from current_solution; pad shorter paths
+        with last waypoint so all agents have the same number of steps.
+        Returns (participant_ids, waypoint_tuples). Empty if no solution.
+        """
+        if not self.current_solution:
+            return ([], [])
+        participant_ids = getattr(self, "_last_order", None) or list(self.current_solution.keys())
+        if not participant_ids:
+            return ([], [])
+        max_len = max(len(self.current_solution[pid]) for pid in participant_ids)
+        if max_len == 0:
+            return (participant_ids, [])
+        waypoint_tuples = []
+        for t in range(max_len):
+            row = []
+            for pid in participant_ids:
+                path = self.current_solution[pid]
+                if t < len(path):
+                    pt = path[t]
+                else:
+                    pt = path[-1]
+                row.append((float(pt[0]), float(pt[1])))
+            waypoint_tuples.append(tuple(row))
+        return (participant_ids, waypoint_tuples)
 
     def get_agent_path(self, agent_id: int) -> List[Tuple[float, float]]:
         """Return continuous waypoints for the agent, or empty list."""
@@ -200,4 +232,5 @@ class RuleBasedSequentialCoordinator:
         """Clear current solution and participants."""
         self.current_solution = {}
         self.current_participants = []
+        self._last_order = []
         self._last_debug_info = None

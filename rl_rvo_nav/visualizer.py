@@ -408,7 +408,7 @@ class TestVisualizer:
                                          color='green', alpha=0.8, linewidth=2)
                 ax.add_patch(square)
                 # Add start label
-                ax.text(x, y - 0.3, f'Start {i+1}', ha='center', va='center', 
+                ax.text(x, y - 0.3, f'Start {i}', ha='center', va='center', 
                        fontsize=12, fontweight='bold', color='green')
         
         # Draw goal positions (green stars)
@@ -419,7 +419,7 @@ class TestVisualizer:
                                             orientation=0, color='green', alpha=0.8)
                 ax.add_patch(star)
                 # Add goal label
-                ax.text(x, y + 0.3, f'Goal {i+1}', ha='center', va='center', 
+                ax.text(x, y + 0.3, f'Goal {i}', ha='center', va='center', 
                        fontsize=12, fontweight='bold', color='green')
     
     def _draw_waypoints(self, ax, waypoint_data):

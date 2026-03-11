@@ -91,7 +91,8 @@ env = gym.make(
 if policy_args.enable_deadlock_resolution:
     deadlock_config = DeadlockConfig()
     deadlock_config.set('DEADLOCK_SOLVER', 'rule_based')
-    deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 2)
+    deadlock_config.set('REQUIRED_NON_PROGRESS_NEIGHBORS', 3)
+    deadlock_config.set('SINGLE_AGENT_TRIGGER_ENABLED', False)
     env.ir_gym.deadlock_config = deadlock_config
     # allow overriding by external config file if explicitly provided
     if policy_args.deadlock_config_file:

@@ -25,8 +25,11 @@ def _cbs_plan_worker(
         max_iter = int(plan_config.get("CBS_MAX_ITER", 200))
         low_level_max_iter = int(plan_config.get("CBS_LOW_LEVEL_MAX_ITER", 100))
         robot_radius_cells = max(0, int(plan_config.get("CBS_ROBOT_RADIUS_CELLS", 0)))
+        grid_w = int(plan_config.get("CBS_GRID_WIDTH", 1))
+        grid_h = int(plan_config.get("CBS_GRID_HEIGHT", 1))
+        grid_size = max(grid_w, grid_h, 1)
         planner = Planner(
-            grid_size=1,
+            grid_size=grid_size,
             robot_radius=robot_radius_cells,
             static_obstacles=static_obstacles,
         )
@@ -246,6 +249,8 @@ class CBSCoordinator:
             "CBS_MAX_ITER": int(self.config.get("CBS_MAX_ITER", 200)),
             "CBS_LOW_LEVEL_MAX_ITER": int(self.config.get("CBS_LOW_LEVEL_MAX_ITER", 100)),
             "CBS_ROBOT_RADIUS_CELLS": max(0, int(self.config.get("CBS_ROBOT_RADIUS_CELLS", 0))),
+            "CBS_GRID_WIDTH": self._grid_width,
+            "CBS_GRID_HEIGHT": self._grid_height,
         }
         timeout_sec = float(self.config.get("CBS_TIMEOUT_SEC", 15.0))
         result_queue = mp.Queue()
@@ -277,13 +282,46 @@ class CBSCoordinator:
                 print("CBS: No solution found")
             return None
 
+        # cbs_mapf can return dict (agent -> path); keys may be Agent objects, so use values() in order
+        if isinstance(result, dict):
+            values_list = list(result.values())
+            if len(values_list) != len(order_ids):
+                if cbs_debug:
+                    print("CBS: dict result length {} != order_ids {}".format(len(values_list), len(order_ids)))
+                return None
+            for i, pid in enumerate(order_ids):
+                path = values_list[i] if i < len(values_list) else None
+                if path is None or (hasattr(path, "__len__") and len(path) == 0):
+                    if cbs_debug:
+                        print("CBS: No path for agent", pid)
+                    return None
+                cont_path = []
+                path_len = len(path) if hasattr(path, "__len__") else 0
+                for t in range(path_len):
+                    pt = path[t]
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        col, row = int(pt[0]), int(pt[1])
+                    elif hasattr(pt, "__getitem__"):
+                        try:
+                            col, row = int(pt[0, 0]), int(pt[1, 0])
+                        except (TypeError, IndexError):
+                            col, row = int(pt[0]), int(pt[1])
+                    else:
+                        if cbs_debug:
+                            print("CBS: Unknown path point type", type(pt))
+                        return None
+                    x, y = self._grid_to_continuous(col, row)
+                    cont_path.append((x, y))
+                self.current_cbs_solution[pid] = cont_path
+            return self
+
         result = np.asarray(result)
         if result.ndim != 3 or result.shape[0] != len(order_ids):
             if cbs_debug:
-                print("CBS: Unexpected result shape")
+                print("CBS: Unexpected result shape", getattr(result, "shape", None))
             return None
 
-        # cbs_mapf returns path as (x,y) = (col, row) per timestep
+        # 3D array: (n_agents, T, 2), path as (x,y) = (col, row) per timestep
         for i, pid in enumerate(order_ids):
             path = result[i]
             cont_path = []
@@ -307,6 +345,28 @@ class CBSCoordinator:
             List of (x, y) continuous waypoints, or empty list if no path.
         """
         return self.current_cbs_solution.get(agent_id, [])
+
+    def get_waypoint_tuples(
+        self,
+    ) -> Tuple[List[int], List[Tuple[Tuple[float, float], ...]]]:
+        """
+        Build per-timestep waypoint tuples from CBS solution (all agents share same T).
+        Returns (participant_ids, waypoint_tuples). Empty if no solution.
+        """
+        if not self.current_cbs_solution:
+            return ([], [])
+        participant_ids = list(self.current_cbs_solution.keys())
+        if not participant_ids:
+            return ([], [])
+        paths = [self.current_cbs_solution[pid] for pid in participant_ids]
+        T = len(paths[0])
+        if T == 0:
+            return (participant_ids, [])
+        waypoint_tuples = [
+            tuple((float(paths[i][t][0]), float(paths[i][t][1])) for i in range(len(participant_ids)))
+            for t in range(T)
+        ]
+        return (participant_ids, waypoint_tuples)
 
     def _get_position(self, agent_state: Dict) -> Optional[Tuple[float, float]]:
         if "position" in agent_state:

@@ -1098,6 +1098,11 @@ class DeadlockLogger:
             fig.savefig(str(outfile), dpi=150, bbox_inches='tight')
             plt.close(fig)
             try:
+                with open(out_dir / "_trace.txt", "a") as f:
+                    f.write(f"saved {outfile.name} success={has_path}\n")
+            except Exception:
+                pass
+            try:
                 jsonfile = out_dir / f"cbs_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.json"
                 data = {
                     'episode': self.stats['episode'],
@@ -1262,6 +1267,11 @@ class DeadlockLogger:
             outfile = out_dir / f"rule_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.png"
             fig.savefig(str(outfile), dpi=150, bbox_inches='tight')
             plt.close(fig)
+            try:
+                with open(out_dir / "_trace.txt", "a") as f:
+                    f.write(f"saved {outfile.name} success={has_path}\n")
+            except Exception:
+                pass
             try:
                 jsonfile = out_dir / f"rule_ep{self.stats['episode']:03d}_step{self.stats['step']:03d}_n{n:03d}.json"
                 data = {

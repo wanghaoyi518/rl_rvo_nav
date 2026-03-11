@@ -115,6 +115,11 @@ class PARCoordinator:
         # Store current solution
         self.current_par_solution = par_solution
         
+        # Store grid start positions and participant order for get_waypoint_tuples() (replay agents_moves)
+        if par_solution and getattr(par_solution, "success", False) and getattr(par_solution, "agents_moves", None):
+            self._last_start_positions_grid = dict(start_positions)
+            self._last_participant_order = sorted(deadlock_participants)
+        
         # Initialize PAR execution tracking
         self._initialize_par_tracking(deadlock_participants)
         
@@ -797,6 +802,48 @@ class PARCoordinator:
             return self.extract_path_from_moves(agent_id)
         
         return []
+    
+    def get_waypoint_tuples(
+        self,
+    ) -> Tuple[List[int], List[Tuple[Tuple[float, float], ...]]]:
+        """
+        Replay agents_moves to build per-timestep waypoint tuples in world coordinates.
+        At each timestep t, tuple[t] = (pos_0_t, pos_1_t, ...) in fixed participant order;
+        moving agents have different position from t-1 to t, waiting agents have same position.
+        Returns (participant_ids, waypoint_tuples). Empty if no solution or missing data.
+        """
+        participant_ids = getattr(self, "_last_participant_order", None)
+        grid_starts = getattr(self, "_last_start_positions_grid", None)
+        if not participant_ids or not grid_starts or not self.current_par_solution:
+            return ([], [])
+        moves = getattr(self.current_par_solution, "agents_moves", None)
+        if not moves:
+            return (participant_ids, [])
+        if not self.par_environment:
+            return (participant_ids, [])
+        grid_positions = {pid: tuple(grid_starts[pid]) for pid in participant_ids if pid in grid_starts}
+        if len(grid_positions) != len(participant_ids):
+            return (participant_ids, [])
+        waypoint_tuples = []
+        for pid in participant_ids:
+            c, r = grid_positions[pid]
+            x, y = self.par_environment.grid_to_world(int(c), int(r))
+            waypoint_tuples.append((float(x), float(y)))
+        out_tuples = [tuple(waypoint_tuples)]
+        for move in moves:
+            mid = getattr(move, "id", None)
+            if mid is not None and mid in grid_positions:
+                cur = grid_positions[mid]
+                dj = getattr(move, "dj", 0)
+                di = getattr(move, "di", 0)
+                grid_positions[mid] = (cur[0] + int(dj), cur[1] + int(di))
+            waypoint_tuples = []
+            for pid in participant_ids:
+                c, r = grid_positions[pid]
+                x, y = self.par_environment.grid_to_world(int(c), int(r))
+                waypoint_tuples.append((float(x), float(y)))
+            out_tuples.append(tuple(waypoint_tuples))
+        return (participant_ids, out_tuples)
     
     def extract_path_from_moves(self, agent_id: int) -> List[Tuple[int, int]]:
         """

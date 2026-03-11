@@ -70,6 +70,7 @@ class DeadlockConfig:
             # Communication and Coordination Parameters
             'COMMUNICATION_RANGE': 10.0,  # Communication range for agents (explicit per request)
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
+            'MIN_PAR_PARTICIPANTS': 4,  # Minimum number of agents required to start MAPF (hard constraint)
             
             # Performance and Debug Parameters
             'DEBUG_MODE': False,  # Enable debug output for PAR diagnostics
