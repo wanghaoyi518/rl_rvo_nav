@@ -68,7 +68,7 @@ class DeadlockConfig:
             'PARTICIPANT_LOCK_STEPS': 5,  # Lock participant set for N steps to avoid oscillation (Experiment B)
             
             # Communication and Coordination Parameters
-            'COMMUNICATION_RANGE': 10.0,  # Communication range for agents (explicit per request)
+            'COMMUNICATION_RANGE': 4.0,  # Communication range for agents (explicit per request)
             'COORDINATION_TIMEOUT': 100,  # Timeout for coordination operations
             'MIN_PAR_PARTICIPANTS': 4,  # Minimum number of agents required to start MAPF (hard constraint)
             

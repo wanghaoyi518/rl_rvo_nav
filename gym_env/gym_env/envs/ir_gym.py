@@ -1410,9 +1410,9 @@ class ir_gym(env_base):
             agent_states = {}
         # Radius from config
         try:
-            radius = float(self.deadlock_config.get('COLLISION_WARNING_DISTANCE', 2.0)) if self.deadlock_config else 2.0
+            radius = float(self.deadlock_config.get('COLLISION_WARNING_DISTANCE', 1.0)) if self.deadlock_config else 1.0
         except Exception:
-            radius = 2.0
+            radius = 1.0
         for agent_id, state in agent_states.items():
             cur = state.get('position')
             if not isinstance(cur, (list, tuple, np.ndarray)) or len(cur) < 2:
@@ -2217,9 +2217,9 @@ class ir_gym(env_base):
         cx, cy = current['position'][0], current['position'][1]
         # Use collision warning distance as neighbor radius
         try:
-            radius = float(self.deadlock_config.get('COLLISION_WARNING_DISTANCE', 2.0)) if self.deadlock_config else 2.0
+            radius = float(self.deadlock_config.get('COLLISION_WARNING_DISTANCE', 1.0)) if self.deadlock_config else 2.0
         except Exception:
-            radius = 2.0
+            radius = 1.0
         for other_id, other in agent_states.items():
             if other_id == agent_id:
                 continue
@@ -2236,63 +2236,34 @@ class ir_gym(env_base):
                 }
         return result
     
-    def _force_par_agent_exit(self, agent_id):
-        """
-        Force a PAR agent to exit PAR mode and switch back to RL mode.
-        
-        Args:
-            agent_id: ID of the agent to force exit
-        """
-        try:
-            if self.state_manager:
-                # Switch agent back to RL mode
-                self.state_manager.set_rl_rvo_mode(agent_id)
-                print(f"FORCED PAR EXIT: Agent {agent_id} switched from PAR to RL mode")
-                
-                # Clear any PAR execution state
-                if hasattr(self, 'par_executor') and self.par_executor:
-                    if hasattr(self.par_executor, 'agent_paths') and agent_id in self.par_executor.agent_paths:
-                        del self.par_executor.agent_paths[agent_id]
-                    if hasattr(self.par_executor, 'agent_substep_index') and agent_id in self.par_executor.agent_substep_index:
-                        del self.par_executor.agent_substep_index[agent_id]
-                
-                # Legacy set_position queue no longer used
-                        
-        except Exception as e:
-            print(f"Error forcing PAR agent {agent_id} exit: {e}")
-    
     def _enforce_boundaries(self, action_list):
         """限制动作，防止机器人移动到地图边界外"""
-        try:
-            # 获取地图边界
-            world_width = getattr(self, '_env_base__width', 15)  # 默认15米
-            world_height = getattr(self, '_env_base__height', 10)  # 默认10米
-            
-            # 检查每个机器人的动作
-            for i, robot in enumerate(self.robot_list):
-                if i < len(action_list) and hasattr(robot, 'state') and robot.state is not None:
-                    current_x = float(robot.state[0, 0])
-                    current_y = float(robot.state[1, 0])
-                    action = action_list[i]
-                    
-                    if action is not None and len(action) >= 2:
-                        # 预测下一步位置
-                        dt = getattr(self, 'step_time', 0.1)
-                        next_x = current_x + action[0] * dt
-                        next_y = current_y + action[1] * dt
-                        
-                        # 检查是否会超出边界
-                        if next_x < 0 or next_x > world_width or next_y < 0 or next_y > world_height:
-                            # 限制动作，使下一步位置在边界内
-                            max_vx = (world_width - current_x) / dt if next_x > world_width else (0 - current_x) / dt if next_x < 0 else action[0]
-                            max_vy = (world_height - current_y) / dt if next_y > world_height else (0 - current_y) / dt if next_y < 0 else action[1]
-                            
-                            # 更新动作
-                            action_list[i] = [max_vx, max_vy]
-                            
-                            # print(f"BOUNDARY ENFORCE: Agent {i} action limited from [{action[0]:.3f}, {action[1]:.3f}] to [{max_vx:.3f}, {max_vy:.3f}] (bounds: [0,{world_width}] x [0,{world_height}])")
-        except Exception as e:
-            print(f"Error enforcing boundaries: {e}")
+        # 获取地图边界
+        world_width = getattr(self, '_env_base__width', 15)  # 默认15米
+        world_height = getattr(self, '_env_base__height', 10)  # 默认10米
         
+        # 检查每个机器人的动作
+        for i, robot in enumerate(self.robot_list):
+            if i < len(action_list) and hasattr(robot, 'state') and robot.state is not None:
+                current_x = float(robot.state[0, 0])
+                current_y = float(robot.state[1, 0])
+                action = action_list[i]
+                
+                if action is not None and len(action) >= 2:
+                    # 预测下一步位置
+                    dt = getattr(self, 'step_time', 0.1)
+                    next_x = current_x + action[0] * dt
+                    next_y = current_y + action[1] * dt
+                    
+                    # 检查是否会超出边界
+                    if next_x < 0 or next_x > world_width or next_y < 0 or next_y > world_height:
+                        # 限制动作，使下一步位置在边界内
+                        max_vx = (world_width - current_x) / dt if next_x > world_width else (0 - current_x) / dt if next_x < 0 else action[0]
+                        max_vy = (world_height - current_y) / dt if next_y > world_height else (0 - current_y) / dt if next_y < 0 else action[1]
+                        
+                        # 更新动作
+                        action_list[i] = [max_vx, max_vy]
+                        
+                        # print(f"BOUNDARY ENFORCE: Agent {i} action limited from [{action[0]:.3f}, {action[1]:.3f}] to [{max_vx:.3f}, {max_vy:.3f}] (bounds: [0,{world_width}] x [0,{world_height}])")
         return action_list
     

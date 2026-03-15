@@ -32,7 +32,7 @@ parser.add_argument('--world_name', default='mode8_long_range.yaml')
 
 parser.add_argument('--render', action='store_true')
 parser.add_argument('--robot_number', type=int, default='8')
-parser.add_argument('--num_episodes', type=int, default='3')
+parser.add_argument('--num_episodes', type=int, default='1')
 parser.add_argument('--dis_mode', type=int, default='8')
 parser.add_argument('--save', action='store_true')
 parser.add_argument('--full', action='store_true')
